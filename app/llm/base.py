@@ -50,13 +50,14 @@ class ModelResponse(BaseModel):
 class LLMProvider(Protocol):
     """Conceptual interface: LLMProvider.generate(messages, tools) -> ModelResponse.
 
-    `tools` are canonical tool schemas exactly as supplied by the starter
-    kit (Anthropic-shaped, with `input_schema`). The runtime never converts
-    schemas to a provider wire format; each provider owns that conversion.
+    `messages` are canonical conversation records (`app.messages`) and `tools`
+    are canonical tool schemas exactly as supplied by the starter kit
+    (Anthropic-shaped, with `input_schema`). The runtime never converts
+    either to a provider wire format; each provider owns that conversion.
     """
 
     def generate(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Any],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse: ...

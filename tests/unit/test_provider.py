@@ -6,11 +6,17 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import Settings
-from app.llm.base import LLMProvider, ModelResponse
+from app.llm.base import LLMProvider, ModelResponse, ToolCallRequest
 from app.llm.groq_provider import (
     GroqProvider,
     normalize_response,
     to_openai_function_tools,
+    to_wire_messages,
+)
+from app.messages import (
+    AssistantToolCallMessage,
+    CanonicalMessage,
+    ToolObservationMessage,
 )
 
 
@@ -144,3 +150,74 @@ def test_converted_parameters_are_independent_of_canonical_schema():
     converted = to_openai_function_tools([CANONICAL_SCHEMA])
     converted[0]["function"]["parameters"]["properties"]["order_id"]["type"] = "number"
     assert CANONICAL_SCHEMA["input_schema"]["properties"]["order_id"]["type"] == "string"
+
+
+def test_wire_conversion_of_text_messages():
+    messages = [
+        CanonicalMessage(role="system", content="You are the resolver."),
+        CanonicalMessage(role="user", content="My order arrived damaged."),
+    ]
+    wire = to_wire_messages(messages)
+    assert wire == [
+        {"role": "system", "content": "You are the resolver."},
+        {"role": "user", "content": "My order arrived damaged."},
+    ]
+
+
+def test_wire_conversion_of_tool_exchange_preserves_call_id():
+    messages = [
+        AssistantToolCallMessage(
+            content=None,
+            tool_calls=[
+                ToolCallRequest(
+                    id="call_7", name="get_order_details", arguments={"order_id": "ORD-1001"}
+                )
+            ],
+        ),
+        ToolObservationMessage(
+            tool_call_id="call_7", tool_name="get_order_details", content='{"status": "delivered"}'
+        ),
+    ]
+    wire = to_wire_messages(messages)
+
+    assistant = wire[0]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] is None
+    assert assistant["tool_calls"] == [
+        {
+            "id": "call_7",
+            "type": "function",
+            "function": {"name": "get_order_details", "arguments": '{"order_id": "ORD-1001"}'},
+        }
+    ]
+
+    tool = wire[1]
+    assert tool["role"] == "tool"
+    assert tool["tool_call_id"] == "call_7"
+    assert tool["content"] == '{"status": "delivered"}'
+
+
+def test_wire_conversion_generates_placeholder_ids_when_missing():
+    messages = [
+        AssistantToolCallMessage(
+            tool_calls=[ToolCallRequest(id=None, name="get_user_profile", arguments={})]
+        ),
+        ToolObservationMessage(tool_call_id=None, tool_name="get_user_profile", content="{}"),
+    ]
+    wire = to_wire_messages(messages)
+    assert wire[0]["tool_calls"][0]["id"] == "call_0"
+    assert wire[1]["tool_call_id"] == "call_0"
+
+
+def test_wire_conversion_rejects_unknown_message_types():
+    with pytest.raises(TypeError, match="Unsupported canonical message"):
+        to_wire_messages([{"role": "user", "content": "raw dict"}])
+
+
+def test_wire_conversion_does_not_mutate_canonical_inputs():
+    message = AssistantToolCallMessage(
+        tool_calls=[ToolCallRequest(id="call_1", name="check_return_policy", arguments={"order_id": "ORD-1001"})]
+    )
+    before = message.model_dump()
+    to_wire_messages([message])
+    assert message.model_dump() == before

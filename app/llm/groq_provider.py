@@ -2,8 +2,8 @@
 
 Knows only how to call one provider and normalize the result into
 `ModelResponse`, including converting canonical (supplied, Anthropic-shaped)
-tool schemas into this provider's wire format. Retry policy belongs to the
-runtime (Milestone 2).
+tool schemas and canonical conversation messages into this provider's wire
+format. Retry policy belongs to the runtime (Milestone 2).
 """
 
 from __future__ import annotations
@@ -17,6 +17,12 @@ import openai
 
 from app.config import Settings
 from app.llm.base import ModelResponse, ToolCallRequest, TransientLLMFailure
+from app.messages import (
+    AssistantToolCallMessage,
+    CanonicalMessage,
+    Message,
+    ToolObservationMessage,
+)
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
@@ -48,6 +54,47 @@ def to_openai_function_tools(
         }
         for schema in schemas
     ]
+
+
+def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Convert canonical conversation messages to OpenAI-compatible wire dicts.
+
+    Only this provider layer knows the wire shape; canonical inputs are never
+    mutated. `tool_call_id` correlation is preserved for tool exchanges.
+    """
+    wire: list[dict[str, Any]] = []
+    for message in messages:
+        if isinstance(message, CanonicalMessage):
+            wire.append({"role": message.role, "content": message.content})
+        elif isinstance(message, AssistantToolCallMessage):
+            wire.append(
+                {
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id or f"call_{index}",
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for index, tc in enumerate(message.tool_calls)
+                    ],
+                }
+            )
+        elif isinstance(message, ToolObservationMessage):
+            wire.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id or "call_0",
+                    "content": message.content,
+                }
+            )
+        else:
+            raise TypeError(f"Unsupported canonical message type: {type(message)!r}")
+    return wire
 
 
 def normalize_response(
@@ -113,17 +160,18 @@ class GroqProvider:
 
     def generate(
         self,
-        messages: list[dict[str, Any]],
+        messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
-        """Call the provider with canonical tool schemas.
+        """Call the provider with canonical messages and canonical tool schemas.
 
-        `tools` are the supplied Anthropic-shaped schemas; conversion to the
-        OpenAI function wire format happens here, never in the runtime.
+        `messages` are canonical conversation records and `tools` are the
+        supplied Anthropic-shaped schemas; conversion to the OpenAI wire
+        formats happens here, never in the runtime.
         """
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "messages": messages,
+            "messages": to_wire_messages(messages),
             "temperature": self._temperature,
         }
         if tools:
