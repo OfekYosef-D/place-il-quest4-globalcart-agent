@@ -1,0 +1,67 @@
+"""Tests for the structured final-output contracts."""
+
+from app.schemas import (
+    ActionTaken,
+    AgentResult,
+    CaseResult,
+    Decision,
+    FinalStatus,
+)
+
+
+def _sample_result() -> AgentResult:
+    return AgentResult(
+        status=FinalStatus.COMPLETED,
+        reasoning_chain=["Order ORD-1001 verified; policy ELIGIBLE; refund approved."],
+        action_taken=ActionTaken(
+            tools_called=["get_order_details", "check_return_policy", "process_refund"],
+            cases=[
+                CaseResult(
+                    order_id="ORD-1001",
+                    decision=Decision.AUTO_REFUND_APPROVED,
+                    refund_amount=35.0,
+                    refund_id="RF-1001-3500",
+                    policy_verdict="ELIGIBLE",
+                )
+            ],
+        ),
+        customer_response="Your refund was approved.",
+    )
+
+
+def test_quest_required_top_level_fields_present():
+    payload = _sample_result().model_dump(mode="json")
+    assert set(payload) == {
+        "status",
+        "reasoning_chain",
+        "action_taken",
+        "customer_response",
+    }
+
+
+def test_cases_is_always_a_list():
+    result = AgentResult(
+        status=FinalStatus.NEEDS_CLARIFICATION,
+        reasoning_chain=[],
+        action_taken=ActionTaken(),
+        customer_response="Please confirm your order number.",
+    )
+    payload = result.model_dump(mode="json")
+    assert payload["action_taken"]["cases"] == []
+    assert payload["action_taken"]["tools_called"] == []
+
+
+def test_round_trip_through_json():
+    original = _sample_result()
+    restored = AgentResult.model_validate_json(original.model_dump_json())
+    assert restored == original
+    assert restored.action_taken.cases[0].decision is Decision.AUTO_REFUND_APPROVED
+
+
+def test_optional_case_fields_default_to_none():
+    case = CaseResult(order_id="ORD-2222", decision=Decision.NO_ACTION)
+    assert case.refund_amount is None
+    assert case.refund_id is None
+    assert case.policy_verdict is None
+    assert case.error_code is None
+    assert case.escalation_reasons == []
