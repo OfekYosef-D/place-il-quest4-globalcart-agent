@@ -1,6 +1,6 @@
 # GlobalCart Operations Resolver Agent - Place IL Quest 4 Stage 1
 
-Status: **architecture/specification complete; implementation intentionally not started yet.**
+Status: **Milestones 0-2 complete (bootstrap, tool/config foundation, and the autonomous agent runtime with guardrails, validator, repair, and CLI); Milestone 3 (evals and polish) not started.**
 
 This repository is prepared as an AI-development handoff for a single autonomous Operations Resolver Agent. The project is intentionally designed to be small, safe, measurable, and easy to explain in an interview.
 
