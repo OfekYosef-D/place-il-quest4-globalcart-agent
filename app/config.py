@@ -21,6 +21,7 @@ ENV_VAR_NAMES = (
     "GROQ_API_KEY",
     "LLM_TIMEOUT_SECONDS",
     "LLM_MAX_RETRIES",
+    "LLM_RETRY_BACKOFF_SECONDS",
     "LLM_TEMPERATURE",
     "AGENT_MAX_STEPS",
     "QUEST4_STARTER_KIT_PATH",
@@ -40,10 +41,13 @@ class Settings(BaseModel):
     # by the runtime (Milestone 2) only to known transient failures.
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)
+    #: Short bounded backoff base between transient-failure retries.
+    llm_retry_backoff_seconds: float = Field(default=0.25, ge=0)
     llm_temperature: float = Field(default=0.0, ge=0)
 
-    # Safety ceiling for the agent loop; calibrated from eval traces later.
-    agent_max_steps: int | None = Field(default=None, gt=0)
+    # Safety ceiling for the agent loop. Provisional default; calibrate from
+    # Milestone 3 eval traces rather than trusting this guess (AGENTS.md).
+    agent_max_steps: int | None = Field(default=12, gt=0)
 
     quest4_starter_kit_path: Path = Path(DEFAULT_STARTER_KIT_PATH)
 

@@ -22,7 +22,8 @@ def test_defaults_apply():
     assert settings.llm_timeout_seconds == 30.0
     assert settings.llm_max_retries == 2
     assert settings.llm_temperature == 0.0
-    assert settings.agent_max_steps is None
+    assert settings.agent_max_steps == 12
+    assert settings.llm_retry_backoff_seconds == 0.25
     assert settings.llm_input_cost_per_million is None
     assert settings.llm_output_cost_per_million is None
 
@@ -67,6 +68,7 @@ def test_invalid_int_fails_validation(monkeypatch):
         ("LLM_TEMPERATURE", "-0.1"),
         ("AGENT_MAX_STEPS", "0"),
         ("AGENT_MAX_STEPS", "-3"),
+        ("LLM_RETRY_BACKOFF_SECONDS", "-0.5"),
         ("LLM_INPUT_COST_PER_MILLION", "-0.01"),
         ("LLM_OUTPUT_COST_PER_MILLION", "-1"),
     ],
@@ -81,6 +83,7 @@ def test_boundary_values_are_allowed(monkeypatch):
     monkeypatch.setenv("LLM_MAX_RETRIES", "0")
     monkeypatch.setenv("LLM_TEMPERATURE", "0")
     monkeypatch.setenv("AGENT_MAX_STEPS", "1")
+    monkeypatch.setenv("LLM_RETRY_BACKOFF_SECONDS", "0")
     monkeypatch.setenv("LLM_INPUT_COST_PER_MILLION", "0")
     monkeypatch.setenv("LLM_OUTPUT_COST_PER_MILLION", "0")
 
@@ -88,8 +91,14 @@ def test_boundary_values_are_allowed(monkeypatch):
     assert settings.llm_max_retries == 0
     assert settings.llm_temperature == 0.0
     assert settings.agent_max_steps == 1
+    assert settings.llm_retry_backoff_seconds == 0.0
     assert settings.llm_input_cost_per_million == 0.0
     assert settings.llm_output_cost_per_million == 0.0
+
+
+def test_agent_max_steps_env_override(monkeypatch):
+    monkeypatch.setenv("AGENT_MAX_STEPS", "20")
+    assert load_settings(env_file=None).agent_max_steps == 20
 
 
 def test_settings_direct_construction_keeps_defaults():
