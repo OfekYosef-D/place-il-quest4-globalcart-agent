@@ -49,9 +49,14 @@ class ActionTaken(BaseModel):
 
 
 class AgentResult(BaseModel):
-    """Final structured output; must always parse or the run fails safe."""
+    """Final structured output; must always parse or the run fails safe.
+
+    `reasoning_chain` must be explicitly supplied with at least one step and
+    `customer_response` must be non-empty — a final output without them is
+    malformed and fails validation rather than silently defaulting.
+    """
 
     status: FinalStatus
-    reasoning_chain: list[str] = Field(default_factory=list)
+    reasoning_chain: list[str] = Field(min_length=1)
     action_taken: ActionTaken
-    customer_response: str
+    customer_response: str = Field(min_length=1)

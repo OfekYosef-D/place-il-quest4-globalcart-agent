@@ -4,6 +4,10 @@ The upstream `mock_services.py` is read-only: this adapter imports it from a
 configurable path and exposes its `TOOL_SCHEMAS` / `TOOL_REGISTRY` without
 modifying or rebuilding them (docs/UPSTREAM.md, MILESTONES M1). No business
 rules and no precondition logic live here.
+
+Provider-agnostic by design: schemas are exposed exactly as supplied
+(Anthropic-shaped, with `input_schema`). Conversion to a provider wire
+format belongs to the provider layer (see `app.llm.groq_provider`).
 """
 
 from __future__ import annotations
@@ -20,24 +24,6 @@ class ToolKitError(RuntimeError):
     """Configuration or dispatch error in the tool access layer."""
 
 
-def to_openai_tool_specs(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert supplied Anthropic-shaped schemas to OpenAI function format.
-
-    The supplied objects are never mutated; the conversion builds new dicts.
-    """
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": schema["name"],
-                "description": schema.get("description", ""),
-                "parameters": copy.deepcopy(schema["input_schema"]),
-            },
-        }
-        for schema in schemas
-    ]
-
-
 class ToolKit:
     """Read-only handle on the supplied tool layer."""
 
@@ -52,9 +38,6 @@ class ToolKit:
     @property
     def tool_names(self) -> list[str]:
         return sorted(self._module.TOOL_REGISTRY)
-
-    def openai_tool_specs(self) -> list[dict[str, Any]]:
-        return to_openai_tool_specs(self.schemas)
 
     def call(self, name: str, **arguments: Any) -> dict[str, Any]:
         """Dispatch through the supplied TOOL_REGISTRY.

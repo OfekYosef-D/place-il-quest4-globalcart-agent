@@ -58,6 +58,40 @@ def test_invalid_int_fails_validation(monkeypatch):
         load_settings(env_file=None)
 
 
+@pytest.mark.parametrize(
+    ("env_name", "bad_value"),
+    [
+        ("LLM_TIMEOUT_SECONDS", "0"),
+        ("LLM_TIMEOUT_SECONDS", "-5"),
+        ("LLM_MAX_RETRIES", "-1"),
+        ("LLM_TEMPERATURE", "-0.1"),
+        ("AGENT_MAX_STEPS", "0"),
+        ("AGENT_MAX_STEPS", "-3"),
+        ("LLM_INPUT_COST_PER_MILLION", "-0.01"),
+        ("LLM_OUTPUT_COST_PER_MILLION", "-1"),
+    ],
+)
+def test_out_of_range_values_fail_validation(monkeypatch, env_name, bad_value):
+    monkeypatch.setenv(env_name, bad_value)
+    with pytest.raises(ValidationError):
+        load_settings(env_file=None)
+
+
+def test_boundary_values_are_allowed(monkeypatch):
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+    monkeypatch.setenv("LLM_TEMPERATURE", "0")
+    monkeypatch.setenv("AGENT_MAX_STEPS", "1")
+    monkeypatch.setenv("LLM_INPUT_COST_PER_MILLION", "0")
+    monkeypatch.setenv("LLM_OUTPUT_COST_PER_MILLION", "0")
+
+    settings = load_settings(env_file=None)
+    assert settings.llm_max_retries == 0
+    assert settings.llm_temperature == 0.0
+    assert settings.agent_max_steps == 1
+    assert settings.llm_input_cost_per_million == 0.0
+    assert settings.llm_output_cost_per_million == 0.0
+
+
 def test_settings_direct_construction_keeps_defaults():
     settings = Settings()
     assert settings.llm_provider == "groq"

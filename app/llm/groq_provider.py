@@ -1,11 +1,14 @@
 """Groq provider over the OpenAI-compatible chat completions API (spec section 6).
 
 Knows only how to call one provider and normalize the result into
-`ModelResponse`. Retry policy belongs to the runtime (Milestone 2).
+`ModelResponse`, including converting canonical (supplied, Anthropic-shaped)
+tool schemas into this provider's wire format. Retry policy belongs to the
+runtime (Milestone 2).
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from typing import Any
@@ -24,6 +27,27 @@ _TRANSIENT_ERRORS = (
     openai.RateLimitError,
     openai.InternalServerError,
 )
+
+
+def to_openai_function_tools(
+    schemas: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert canonical Anthropic-shaped tool schemas to OpenAI function format.
+
+    The runtime passes the supplied `TOOL_SCHEMAS` unchanged; only this
+    provider layer knows the wire format. Input objects are never mutated.
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": schema["name"],
+                "description": schema.get("description", ""),
+                "parameters": copy.deepcopy(schema["input_schema"]),
+            },
+        }
+        for schema in schemas
+    ]
 
 
 def normalize_response(
@@ -92,13 +116,18 @@ class GroqProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
+        """Call the provider with canonical tool schemas.
+
+        `tools` are the supplied Anthropic-shaped schemas; conversion to the
+        OpenAI function wire format happens here, never in the runtime.
+        """
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "temperature": self._temperature,
         }
         if tools:
-            kwargs["tools"] = tools
+            kwargs["tools"] = to_openai_function_tools(tools)
 
         start = time.perf_counter()
         try:

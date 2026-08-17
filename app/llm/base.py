@@ -48,7 +48,12 @@ class ModelResponse(BaseModel):
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    """Conceptual interface: LLMProvider.generate(messages, tools) -> ModelResponse."""
+    """Conceptual interface: LLMProvider.generate(messages, tools) -> ModelResponse.
+
+    `tools` are canonical tool schemas exactly as supplied by the starter
+    kit (Anthropic-shaped, with `input_schema`). The runtime never converts
+    schemas to a provider wire format; each provider owns that conversion.
+    """
 
     def generate(
         self,

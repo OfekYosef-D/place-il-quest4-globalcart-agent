@@ -1,12 +1,28 @@
 """Tests for provider contracts and normalization (no network access)."""
 
+import copy
 from types import SimpleNamespace
 
 import pytest
 
 from app.config import Settings
 from app.llm.base import LLMProvider, ModelResponse
-from app.llm.groq_provider import GroqProvider, normalize_response
+from app.llm.groq_provider import (
+    GroqProvider,
+    normalize_response,
+    to_openai_function_tools,
+)
+
+
+CANONICAL_SCHEMA = {
+    "name": "get_order_details",
+    "description": "Look up a GlobalCart order by id.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"order_id": {"type": "string"}},
+        "required": ["order_id"],
+    },
+}
 
 
 def _fake_completion(content=None, tool_calls=None, usage=None) -> SimpleNamespace:
@@ -105,3 +121,26 @@ def test_provider_requires_model():
 def test_provider_constructs_offline_and_satisfies_protocol():
     provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="some-model"))
     assert isinstance(provider, LLMProvider)
+
+
+def test_canonical_schema_converts_to_openai_function_shape_without_mutation():
+    before = copy.deepcopy(CANONICAL_SCHEMA)
+
+    converted = to_openai_function_tools([CANONICAL_SCHEMA])
+
+    assert len(converted) == 1
+    spec = converted[0]
+    assert spec["type"] == "function"
+    assert set(spec["function"]) == {"name", "description", "parameters"}
+    assert spec["function"]["name"] == "get_order_details"
+    assert spec["function"]["parameters"] == CANONICAL_SCHEMA["input_schema"]
+
+    # Canonical schema is never mutated by the provider-layer conversion.
+    assert CANONICAL_SCHEMA == before
+    assert "input_schema" in CANONICAL_SCHEMA
+
+
+def test_converted_parameters_are_independent_of_canonical_schema():
+    converted = to_openai_function_tools([CANONICAL_SCHEMA])
+    converted[0]["function"]["parameters"]["properties"]["order_id"]["type"] = "number"
+    assert CANONICAL_SCHEMA["input_schema"]["properties"]["order_id"]["type"] == "string"

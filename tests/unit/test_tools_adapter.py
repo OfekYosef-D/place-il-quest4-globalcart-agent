@@ -3,7 +3,7 @@
 import pytest
 
 from app.config import Settings
-from app.tools_adapter import ToolKitError, load_toolkit, to_openai_tool_specs
+from app.tools_adapter import ToolKitError, load_toolkit
 
 EXPECTED_TOOLS = [
     "check_return_policy",
@@ -35,21 +35,12 @@ def test_schemas_are_defensive_copies(kit):
     assert all(schema["name"] != "tampered" for schema in kit.schemas)
 
 
-def test_openai_conversion_shape_without_mutation(kit):
-    before = kit.schemas
-    converted = kit.openai_tool_specs()
-
-    assert len(converted) == 4
-    for spec in converted:
-        assert spec["type"] == "function"
-        function = spec["function"]
-        assert set(function) == {"name", "description", "parameters"}
-        assert function["parameters"]["type"] == "object"
-
-    # Supplied schemas remain Anthropic-shaped and untouched.
-    after = kit.schemas
-    assert before == after
-    assert all("input_schema" in schema for schema in after)
+def test_schemas_are_exposed_in_canonical_anthropic_shape(kit):
+    # Provider-wire conversion belongs to the provider layer
+    # (app.llm.groq_provider); the adapter stays provider-agnostic.
+    for schema in kit.schemas:
+        assert set(schema) == {"name", "description", "input_schema"}
+        assert schema["input_schema"]["type"] == "object"
 
 
 def test_read_call_returns_trusted_order_data(kit):

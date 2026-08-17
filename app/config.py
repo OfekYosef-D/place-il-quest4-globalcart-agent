@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DEFAULT_STARTER_KIT_PATH = ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit"
 
@@ -38,19 +38,19 @@ class Settings(BaseModel):
 
     # LLM call discipline: initial attempt + llm_max_retries retries, applied
     # by the runtime (Milestone 2) only to known transient failures.
-    llm_timeout_seconds: float = 30.0
-    llm_max_retries: int = 2
-    llm_temperature: float = 0.0
+    llm_timeout_seconds: float = Field(default=30.0, gt=0)
+    llm_max_retries: int = Field(default=2, ge=0)
+    llm_temperature: float = Field(default=0.0, ge=0)
 
     # Safety ceiling for the agent loop; calibrated from eval traces later.
-    agent_max_steps: int | None = None
+    agent_max_steps: int | None = Field(default=None, gt=0)
 
     quest4_starter_kit_path: Path = Path(DEFAULT_STARTER_KIT_PATH)
 
     # Optional pricing for estimated-cost reporting; keep mutable pricing out
     # of agent logic.
-    llm_input_cost_per_million: float | None = None
-    llm_output_cost_per_million: float | None = None
+    llm_input_cost_per_million: float | None = Field(default=None, ge=0)
+    llm_output_cost_per_million: float | None = Field(default=None, ge=0)
 
 
 def load_settings(env_file: str | Path | None = ".env") -> Settings:

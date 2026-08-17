@@ -1,5 +1,8 @@
 """Tests for the structured final-output contracts."""
 
+import pytest
+from pydantic import ValidationError
+
 from app.schemas import (
     ActionTaken,
     AgentResult,
@@ -42,7 +45,7 @@ def test_quest_required_top_level_fields_present():
 def test_cases_is_always_a_list():
     result = AgentResult(
         status=FinalStatus.NEEDS_CLARIFICATION,
-        reasoning_chain=[],
+        reasoning_chain=["Order id missing; asked the customer to confirm it."],
         action_taken=ActionTaken(),
         customer_response="Please confirm your order number.",
     )
@@ -65,3 +68,50 @@ def test_optional_case_fields_default_to_none():
     assert case.policy_verdict is None
     assert case.error_code is None
     assert case.escalation_reasons == []
+
+
+def _kwargs(**overrides):
+    base = {
+        "status": FinalStatus.COMPLETED,
+        "reasoning_chain": ["Verified order, checked policy, approved refund."],
+        "action_taken": ActionTaken(),
+        "customer_response": "Your refund was approved.",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_missing_reasoning_chain_fails_validation():
+    kwargs = _kwargs()
+    del kwargs["reasoning_chain"]
+    with pytest.raises(ValidationError):
+        AgentResult(**kwargs)
+
+
+def test_empty_reasoning_chain_fails_validation():
+    with pytest.raises(ValidationError):
+        AgentResult(**_kwargs(reasoning_chain=[]))
+
+
+def test_missing_customer_response_fails_validation():
+    kwargs = _kwargs()
+    del kwargs["customer_response"]
+    with pytest.raises(ValidationError):
+        AgentResult(**kwargs)
+
+
+def test_empty_customer_response_fails_validation():
+    with pytest.raises(ValidationError):
+        AgentResult(**_kwargs(customer_response=""))
+
+
+@pytest.mark.parametrize("status", [FinalStatus.NEEDS_CLARIFICATION, FinalStatus.FAILED_SAFE])
+def test_non_completed_outputs_stay_valid(status):
+    result = AgentResult(
+        status=status,
+        reasoning_chain=["Trusted evidence was insufficient; stopped safely."],
+        action_taken=ActionTaken(tools_called=["get_order_details"]),
+        customer_response="We need a bit more information to continue.",
+    )
+    assert result.status is status
+    assert len(result.reasoning_chain) == 1
