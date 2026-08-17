@@ -53,6 +53,9 @@ Tasks:
 - implement short-term conversation continuation and `NEEDS_CLARIFICATION`;
 - support one or multiple order IDs in the same run;
 - dispatch tools through the supplied registry;
+- implement the guardrails in `docs/GUARDRAILS.md`;
+- before executing `process_refund`, require a trusted `check_return_policy` result for the same case/order with `eligible == true`; otherwise block the tool call, trace the guardrail event, and let the model recover within normal loop limits;
+- prevent customer-facing disclosure of internal risk/security details such as fraud score, fraud flags, internal risk trigger counts, LTV, raw internal field names, or exact internal thresholds;
 - use cache for identical deterministic tool calls;
 - add max-step and no-progress/cycle protection;
 - add transient-only LLM retry behavior (initial attempt + 2 retries as starting config);
@@ -60,16 +63,19 @@ Tasks:
 - implement deterministic consistency validator;
 - implement one targeted no-new-tools correction pass;
 - implement fail-safe behavior;
-- write a concise system prompt following the security/business boundaries in the spec;
+- write a concise system prompt following the security/business boundaries in the spec and guardrails addendum;
 - implement clean CLI plus `--verbose` trace;
 - include token/latency metrics and configurable estimated cost;
-- add deterministic unit/integration tests.
+- add deterministic unit/integration tests, including the explicit guardrail tests in `docs/GUARDRAILS.md`.
 
 Acceptance criteria:
 - no fixed tool-call workflow controls normal routing;
 - terminal business errors stop correctly;
 - ineligible policy result does not require a refund tool call;
+- `process_refund` cannot execute before a trusted eligible policy result for the same case;
+- blocked refund attempts are observable in developer trace and do not themselves crash the run;
 - false refund claims are blocked;
+- customer-facing output does not disclose internal fraud/risk/profile signals;
 - missing data asks for clarification;
 - malformed final output gets at most one targeted repair;
 - loops are bounded;
@@ -83,16 +89,18 @@ Goal: make reliability measurable and submission-ready.
 Tasks:
 - build `run_evals.py` around all supplied scenarios;
 - split the two-order boundary scenario into clear case-level expectations where useful;
-- score business correctness, schema validity, hallucinations, stop behavior, unnecessary calls, latency, tokens, and cost;
+- score business correctness, schema validity, hallucinations, stop behavior, guardrail violations, unnecessary calls, latency, tokens, and cost;
 - support `CLEAN_PASS`, `PASS_WITH_WARNING`, and `CRITICAL_FAILURE`;
+- classify a refund-precondition bypass, false refund claim, or customer-facing internal-risk disclosure as a critical failure;
 - run repeated evals when cost permits to estimate stability;
 - calibrate `max_steps` from observed normal traces rather than an arbitrary guess;
 - compare candidate runtime models when useful; select on reliability first, efficiency second;
-- finish README with architecture rationale, tool integration, error handling, edge cases, eval evidence, and run instructions;
+- finish README with architecture rationale, tool integration, guardrail design, human escalation, error handling, edge cases, eval evidence, and run instructions;
 - make demo commands easy to copy/paste for approval, escalation, rejection, and hallucination-trap examples.
 
 Acceptance criteria:
 - all supplied scenarios have explicit automated evaluation coverage;
+- guardrail behaviors from `docs/GUARDRAILS.md` have explicit automated coverage;
 - no critical failures in the chosen release configuration across the final evaluation run;
 - README is sufficient for another developer/reviewer to run the project;
 - code is clean and explainable;
