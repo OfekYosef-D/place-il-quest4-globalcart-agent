@@ -65,8 +65,18 @@ _EXECUTED_OUTCOMES = (
 )
 
 
-def validate_result(result: AgentResult, state: AgentState) -> list[str]:
-    """Return consistency violations (empty list means consistent)."""
+def validate_result(
+    result: AgentResult, state: AgentState, turn_start_history: int = 0
+) -> list[str]:
+    """Return consistency violations (empty list means consistent).
+
+    Action validation is scoped to the current customer turn: `AgentResult`
+    describes this turn, while `AgentState` stays the cumulative short-term
+    trusted memory. `turn_start_history` is the tool_history index at turn
+    start (0 validates the whole history, which is correct for single turns).
+    Trusted prior-turn cases/evidence remain available for continuation and
+    evidence-consistency checks.
+    """
     issues: list[str] = []
 
     reported_ids = [case_result.order_id for case_result in result.action_taken.cases]
@@ -76,14 +86,17 @@ def validate_result(result: AgentResult, state: AgentState) -> list[str]:
     for order_id in sorted({oid for oid in reported_set if reported_ids.count(oid) > 1}):
         issues.append(f"Case {order_id}: appears more than once in action_taken.cases.")
 
-    # Resolved trusted cases may never silently disappear from the output.
-    # FAILED_SAFE may omit genuinely unresolved cases, never resolved ones.
-    for order_id in sorted(state.cases):
-        case = state.cases[order_id]
-        if _case_is_resolved(case) and order_id not in reported_set:
+    # A case resolved by evidence collected in the current turn may never
+    # silently disappear from this turn's output. Cases resolved in earlier
+    # turns stay trusted in AgentState but are not re-demanded here:
+    # action_taken describes the current turn only. FAILED_SAFE may omit
+    # genuinely unresolved cases, never resolved ones.
+    for order_id in sorted(touched_case_ids(state, turn_start_history)):
+        case = state.cases.get(order_id)
+        if case is not None and _case_is_resolved(case) and order_id not in reported_set:
             issues.append(
-                f"Case {order_id}: trusted outcome is resolved but missing from "
-                "action_taken.cases."
+                f"Case {order_id}: resolved by evidence collected in the current "
+                "turn but missing from action_taken.cases."
             )
 
     for case_result in result.action_taken.cases:
@@ -97,9 +110,25 @@ def validate_result(result: AgentResult, state: AgentState) -> list[str]:
             continue
         issues.extend(_validate_case(order_id, case_result.decision, case_result, case))
 
-    issues.extend(_validate_tools_called(result, state))
+    issues.extend(_validate_tools_called(result, state, turn_start_history))
     issues.extend(_validate_customer_response(result, state))
     return issues
+
+
+def touched_case_ids(state: AgentState, turn_start_history: int = 0) -> set[str]:
+    """Order ids referenced by factual tool interactions in the turn scope.
+
+    Small explicit turn scope derived from the cumulative trusted history:
+    only EXECUTED/CACHED/BUSINESS_ERROR interactions count, and only
+    order-scoped ones (auxiliary profile lookups never resolve a case on
+    their own, so they cannot create completeness obligations).
+    """
+    return {
+        interaction.arguments["order_id"]
+        for interaction in state.tool_history[turn_start_history:]
+        if interaction.outcome in _EXECUTED_OUTCOMES
+        and isinstance(interaction.arguments.get("order_id"), str)
+    }
 
 
 def _case_is_resolved(case: CaseState) -> bool:
@@ -110,12 +139,15 @@ def _case_is_resolved(case: CaseState) -> bool:
     return isinstance(policy, dict) and policy.get("eligible") is False
 
 
-def _validate_tools_called(result: AgentResult, state: AgentState) -> list[str]:
-    """tools_called must be exactly the factual executed/cache-served tool set."""
+def _validate_tools_called(
+    result: AgentResult, state: AgentState, turn_start_history: int
+) -> list[str]:
+    """tools_called must be exactly the factual executed/cache-served tool set
+    of the current customer turn (prior turns are out of scope)."""
     issues: list[str] = []
     executed = {
         interaction.tool_name
-        for interaction in state.tool_history
+        for interaction in state.tool_history[turn_start_history:]
         if interaction.outcome in _EXECUTED_OUTCOMES
     }
     reported = result.action_taken.tools_called
@@ -251,9 +283,22 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
             "customer_response claims a refund succeeded without a trusted APPROVED result."
         )
 
-    refund_case_count = sum(
-        1 for case in state.cases.values() if isinstance(case.refund_result, dict)
-    )
+    # Blanket claims are judged against the cases reported in this turn: any
+    # relevant reported case with a non-approved business outcome makes them
+    # false, including policy-level rejections where process_refund never ran.
+    refund_relevant_count = 0
+    approved_reported_count = 0
+    for case_result in result.action_taken.cases:
+        case = state.cases.get(case_result.order_id)
+        if case is None:
+            continue
+        refund = case.refund_result
+        if isinstance(refund, dict):
+            refund_relevant_count += 1
+            if refund.get("status") == "APPROVED":
+                approved_reported_count += 1
+        elif isinstance(case.policy_result, dict) and case.policy_result.get("eligible") is False:
+            refund_relevant_count += 1
 
     for sentence in _SENTENCE_SPLIT_RE.split(response):
         lowered = sentence.lower()
@@ -269,22 +314,25 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
                     "without a trusted APPROVED result for that order."
                 )
 
-        # Blanket claims ("all/both refunds approved") require every refund
-        # case to actually be approved; mixed outcomes make them false.
+        # Blanket claims ("all/both refunds approved") require every relevant
+        # reported refund case to actually be approved; mixed outcomes make
+        # them false.
         blanket = _BLANKET_CLAIM_RE.search(lowered)
         if blanket:
             all_refunds_approved = (
-                refund_case_count > 0 and len(approved_orders) == refund_case_count
+                refund_relevant_count > 0
+                and approved_reported_count == refund_relevant_count
             )
             if not all_refunds_approved:
                 issues.append(
                     f"customer_response makes a blanket refund claim "
-                    f"({blanket.group(0)!r}) but not every refund case is approved."
+                    f"({blanket.group(0)!r}) but not every relevant case reported "
+                    "in this turn has an approved refund outcome."
                 )
-            elif blanket.group(0).lower() == "both" and len(approved_orders) < 2:
+            elif blanket.group(0).lower() == "both" and approved_reported_count < 2:
                 issues.append(
                     "customer_response claims 'both' refunds were approved but fewer "
-                    "than two approved refund cases exist."
+                    "than two approved refund cases are reported in this turn."
                 )
 
     for pattern in DISCLOSURE_PATTERNS:

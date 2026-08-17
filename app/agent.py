@@ -45,7 +45,7 @@ from app.tool_cache import ToolCache, normalize_args
 from app.tool_executor import ToolExecutor, ToolSystemFailure
 from app.tools_adapter import ToolKit
 from app.tracing import BlockedToolEvent, ModelCallRecord, RunSummary, estimate_cost
-from app.validator import validate_result
+from app.validator import touched_case_ids, validate_result
 
 #: Consecutive steps of only-identical repeated calls before fail-safe.
 #: Tracked per customer turn; resets at the start of every turn.
@@ -209,12 +209,14 @@ class OperationsResolverAgent:
                 continue
 
             result, assessment, failure_reason = self._finalize_from_content(
-                response.content, state, model_calls
+                response.content, state, model_calls, turn_start_history
             )
 
         if result is None:
             state.failure_reason = failure_reason or "UNKNOWN_FAILURE"
-            result = self._build_fail_safe_result(state, state.failure_reason)
+            result = self._build_fail_safe_result(
+                state, state.failure_reason, turn_start_history
+            )
         else:
             state.failure_reason = None
 
@@ -298,6 +300,7 @@ class OperationsResolverAgent:
         content: str | None,
         state: AgentState,
         model_calls: list[ModelCallRecord],
+        turn_start_history: int,
     ) -> tuple[AgentResult | None, ModelAssessment | None, str | None]:
         """Parse and validate final content; at most one ephemeral repair pass."""
         problems: list[str] | None = None
@@ -310,7 +313,7 @@ class OperationsResolverAgent:
             problems = [str(exc)]
 
         if result is not None:
-            issues = validate_result(result, state)
+            issues = validate_result(result, state, turn_start_history)
             if issues:
                 problems = issues
                 result, assessment = None, None
@@ -344,7 +347,7 @@ class OperationsResolverAgent:
                     retries=repair.attempts - 1,
                 )
             )
-            issues = validate_result(repair.result, state)
+            issues = validate_result(repair.result, state, turn_start_history)
             if issues:
                 return None, None, f"VALIDATION_FAILED_AFTER_REPAIR: {'; '.join(issues)}"
             result = repair.result
@@ -356,21 +359,30 @@ class OperationsResolverAgent:
     # Fail-safe and summary
     # ------------------------------------------------------------------
 
-    def _build_fail_safe_result(self, state: AgentState, reason: str) -> AgentResult:
+    def _build_fail_safe_result(
+        self, state: AgentState, reason: str, turn_start_history: int
+    ) -> AgentResult:
         """Deterministic FAILED_SAFE output grounded in trusted evidence.
 
+        action_taken describes the current customer turn: only cases touched
+        and factual tools executed within this turn are reported, while prior
+        trusted outcomes stay preserved in AgentState for continuation.
         Resolved case outcomes are preserved exactly as the evidence supports
         them. Human-review wording appears only for genuinely unresolved cases:
         when every known case already has a trusted terminal outcome, those
         outcomes are reported directly (spec section 13, validator rule 9,
         execution clarification 4, review fix 6).
         """
-        cases = [_case_result_from_evidence(case) for case in _ordered_cases(state)]
+        cases = [
+            _case_result_from_evidence(state.cases[order_id])
+            for order_id in sorted(touched_case_ids(state, turn_start_history))
+            if order_id in state.cases
+        ]
         has_unresolved = any(_is_unresolved_escalation(case) for case in cases)
         tools_called = sorted(
             {
                 interaction.tool_name
-                for interaction in state.tool_history
+                for interaction in state.tool_history[turn_start_history:]
                 if interaction.outcome in _CACHEABLE_OUTCOMES
             }
         )
@@ -493,10 +505,6 @@ def _latest_customer_language(state: AgentState) -> str:
         if isinstance(message, CanonicalMessage) and message.role == "user":
             return "he" if _HEBREW_RE.search(message.content) else "en"
     return "en"
-
-
-def _ordered_cases(state: AgentState) -> list[CaseState]:
-    return [state.cases[order_id] for order_id in sorted(state.cases)]
 
 
 def _is_unresolved_escalation(case_result: CaseResult) -> bool:

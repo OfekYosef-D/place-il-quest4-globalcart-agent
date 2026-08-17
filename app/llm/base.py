@@ -51,17 +51,34 @@ def ensure_unique_tool_call_ids(response: ModelResponse) -> ModelResponse:
     """Guarantee a stable non-empty unique id on every requested tool call.
 
     Applied at the provider boundary so the runtime can correlate every tool
-    observation with exactly one request. Providers that omit ids get a
-    generated one; the ambiguous "many missing ids share one placeholder"
-    fallback must never return.
+    observation with exactly one request. An id is generated when it is
+    missing/empty or already used by another call in the same response;
+    already-valid unique provider ids are preserved untouched. The ambiguous
+    "many missing ids share one placeholder" fallback must never return.
     """
-    if not response.tool_calls or all(call.id for call in response.tool_calls):
+    seen: set[str] = set()
+    normalized: list[ToolCallRequest] = []
+    changed = False
+    for call in response.tool_calls:
+        if call.id and call.id not in seen:
+            seen.add(call.id)
+            normalized.append(call)
+            continue
+        new_id = _fresh_tool_call_id(seen)
+        seen.add(new_id)
+        normalized.append(call.model_copy(update={"id": new_id}))
+        changed = True
+    if not changed:
         return response
-    normalized = [
-        call if call.id else call.model_copy(update={"id": f"call_{uuid.uuid4().hex}"})
-        for call in response.tool_calls
-    ]
     return response.model_copy(update={"tool_calls": normalized})
+
+
+def _fresh_tool_call_id(seen: set[str]) -> str:
+    """Generate an id that collides with neither kept nor generated ids."""
+    candidate = f"call_{uuid.uuid4().hex}"
+    while candidate in seen:
+        candidate = f"call_{uuid.uuid4().hex}"
+    return candidate
 
 
 @runtime_checkable

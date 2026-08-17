@@ -257,13 +257,15 @@ def test_failed_safe_contradicting_escalation_evidence_fails():
 
 
 def test_resolved_case_missing_from_output_fails():
-    state = _approved_state()
+    # Completeness is driven by the turn's factual interactions (here: the
+    # whole history, i.e. a single turn with turn_start_history=0).
+    state = _history_state()
     issues = validate_result(_result([]), state)
     assert any("missing from" in issue for issue in issues)
 
 
 def test_failed_safe_may_not_drop_resolved_cases():
-    state = _approved_state()
+    state = _history_state()
     issues = validate_result(_result([], status=FinalStatus.FAILED_SAFE), state)
     assert any("missing from" in issue for issue in issues), (
         "FAILED_SAFE may omit genuinely unresolved cases only, never resolved ones"
@@ -469,3 +471,137 @@ def test_blanket_claim_allowed_when_every_refund_is_approved():
     ]
     result = _result(cases, response="Both refunds were approved.")
     assert validate_result(result, state) == []
+
+
+def test_blanket_claim_fails_with_policy_rejected_case():
+    """Pre-Milestone-3 fix 2: ORD-1001 APPROVED plus ORD-1003 trusted
+    eligible=false (process_refund never executed) makes "all refunds were
+    approved" a false blanket claim."""
+    state = _mixed_outcome_state()
+    result = _result(_mixed_cases(), response="All refunds were approved.")
+    issues = validate_result(result, state)
+    assert any("blanket" in issue for issue in issues)
+
+
+# ----------------------------------------------------------------------
+# Turn-scoped action validation (pre-Milestone-3 fix 1)
+# ----------------------------------------------------------------------
+
+
+def _two_turn_state():
+    """Session state after turn 1 resolved ORD-1001 and turn 2 resolved ORD-1010.
+
+    Returns (state, turn_start_history) where turn_start_history indexes the
+    first interaction of turn 2 in the cumulative tool_history.
+    """
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(
+        order_id="ORD-1001",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "APPROVED", "approved_amount": 35.0, "refund_id": "RF-1001-3500"},
+        decision=Decision.AUTO_REFUND_APPROVED,
+    )
+    state.cases["ORD-1010"] = CaseState(
+        order_id="ORD-1010",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "APPROVED", "approved_amount": 48.0, "refund_id": "RF-1010-4800"},
+    )
+    turn1 = [
+        ToolInteraction(
+            step=1,
+            tool_name="get_order_details",
+            arguments={"order_id": "ORD-1001"},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"order_id": "ORD-1001"},
+        ),
+        ToolInteraction(
+            step=2,
+            tool_name="get_user_profile",
+            arguments={"user_id": "USR-101"},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"user_id": "USR-101"},
+        ),
+        ToolInteraction(
+            step=3,
+            tool_name="check_return_policy",
+            arguments={"order_id": "ORD-1001"},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"eligible": True, "verdict": "ELIGIBLE"},
+        ),
+        ToolInteraction(
+            step=4,
+            tool_name="process_refund",
+            arguments={"order_id": "ORD-1001", "amount": 35.0},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"status": "APPROVED"},
+        ),
+    ]
+    turn2 = [
+        ToolInteraction(
+            step=1,
+            tool_name="get_order_details",
+            arguments={"order_id": "ORD-1010"},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"order_id": "ORD-1010"},
+        ),
+        ToolInteraction(
+            step=2,
+            tool_name="check_return_policy",
+            arguments={"order_id": "ORD-1010"},
+            outcome=ToolInteractionOutcome.CACHED,
+            result={"eligible": True, "verdict": "ELIGIBLE"},
+        ),
+        ToolInteraction(
+            step=3,
+            tool_name="process_refund",
+            arguments={"order_id": "ORD-1010", "amount": 48.0},
+            outcome=ToolInteractionOutcome.EXECUTED,
+            result={"status": "APPROVED"},
+        ),
+    ]
+    state.tool_history.extend(turn1 + turn2)
+    return state, len(turn1)
+
+
+def _turn2_result():
+    return _result(
+        [
+            CaseResult(
+                order_id="ORD-1010",
+                decision=Decision.AUTO_REFUND_APPROVED,
+                refund_amount=48.0,
+                refund_id="RF-1010-4800",
+                policy_verdict="ELIGIBLE",
+            )
+        ],
+        response="Your refund was approved for order ORD-1010.",
+        tools_called=["get_order_details", "check_return_policy", "process_refund"],
+    )
+
+
+def test_turn_scope_validates_only_current_turn_tools_and_cases():
+    """action_taken describes the current turn; prior trusted state stays
+    available in session memory but is not re-demanded."""
+    state, turn_start = _two_turn_state()
+
+    assert validate_result(_turn2_result(), state, turn_start_history=turn_start) == []
+
+    # The same output fails whole-session validation: session scope would
+    # wrongly demand the prior turn's resolved case and its turn-1-only tool.
+    session_issues = validate_result(_turn2_result(), state)
+    assert any("ORD-1001" in issue and "missing from" in issue for issue in session_issues)
+    assert any("get_user_profile" in issue and "omits" in issue for issue in session_issues)
+
+
+def test_current_turn_resolved_case_cannot_be_silently_omitted():
+    state, turn_start = _two_turn_state()
+    incomplete = _result(
+        [],
+        response="Thank you for your patience.",
+        tools_called=["get_order_details", "check_return_policy", "process_refund"],
+    )
+    issues = validate_result(incomplete, state, turn_start_history=turn_start)
+    assert any("ORD-1010" in issue and "missing from" in issue for issue in issues)
+    assert not any("ORD-1001" in issue for issue in issues), (
+        "prior-turn cases must not be re-demanded by the current turn"
+    )

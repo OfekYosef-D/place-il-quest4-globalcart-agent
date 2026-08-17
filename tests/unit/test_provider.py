@@ -233,6 +233,43 @@ def test_normalize_response_assigns_unique_ids_when_provider_omits_them():
     assert ids[2] == "call_keep", "provider-supplied ids are preserved exactly"
 
 
+def test_normalize_response_resolves_duplicate_and_empty_tool_call_ids():
+    """Fix 3: duplicated non-empty ids and empty ids are regenerated while the
+    first valid occurrence is preserved; uniqueness survives wire conversion."""
+    raw = _fake_completion(
+        tool_calls=[
+            _fake_tool_call("get_order_details", '{"order_id": "ORD-1001"}', call_id="call_dup"),
+            _fake_tool_call("get_order_details", '{"order_id": "ORD-1010"}', call_id="call_dup"),
+            _fake_tool_call("get_user_profile", '{"user_id": "USR-101"}', call_id=""),
+        ]
+    )
+
+    response = normalize_response(
+        raw, provider="groq", fallback_model="fallback", latency_ms=1.0
+    )
+
+    ids = [call.id for call in response.tool_calls]
+    assert all(ids), "every tool call must carry a non-empty id"
+    assert len(set(ids)) == 3, "duplicated and empty ids must be made unique"
+    assert ids[0] == "call_dup", "the first valid occurrence is preserved"
+
+    # Correlation survives wire conversion: every assistant tool-call id is
+    # matched by exactly one tool result carrying the same id.
+    messages = [
+        AssistantToolCallMessage(content=None, tool_calls=list(response.tool_calls)),
+        *[
+            ToolObservationMessage(tool_call_id=call.id, tool_name=call.name, content="{}")
+            for call in response.tool_calls
+        ],
+    ]
+    wire = to_wire_messages(messages)
+    wire_request_ids = [wire_call["id"] for wire_call in wire[0]["tool_calls"]]
+    wire_result_ids = [entry["tool_call_id"] for entry in wire[1:]]
+    assert wire_request_ids == ids
+    assert sorted(wire_result_ids) == sorted(ids)
+    assert len(set(wire_result_ids)) == 3
+
+
 def test_wire_conversion_rejects_unknown_message_types():
     with pytest.raises(TypeError, match="Unsupported canonical message"):
         to_wire_messages([{"role": "user", "content": "raw dict"}])

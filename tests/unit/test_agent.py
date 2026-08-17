@@ -41,6 +41,10 @@ ORDER_1001 = {"order_id": "ORD-1001"}
 POLICY_1001 = {"order_id": "ORD-1001", "reason": "damaged_on_arrival"}
 REFUND_1001 = {"order_id": "ORD-1001", "amount": 35.0, "reason": "damaged_on_arrival"}
 
+ORDER_1010 = {"order_id": "ORD-1010"}
+POLICY_1010 = {"order_id": "ORD-1010", "reason": "damaged_on_arrival"}
+REFUND_1010 = {"order_id": "ORD-1010", "amount": 48.0, "reason": "damaged_on_arrival"}
+
 
 def approved_final(extra=None, tools_called=None):
     payload = {
@@ -655,3 +659,74 @@ def test_unexpected_extra_fields_trigger_repair_path(kit):
     assert run.result.status is FinalStatus.COMPLETED
     assert any(call.kind == "repair" for call in run.model_calls)
     assert len(provider.calls) == 5, "exactly one repair attempt"
+
+
+def test_turn_two_validates_against_current_turn_only(kit):
+    """Pre-Milestone-3 fix 1: turn 1 resolves ORD-1001, turn 2 starts and
+    resolves a different order (ORD-1010).
+
+    Turn 2's action_taken is validated against turn 2's factual tools and
+    touched cases only, while ORD-1001's trusted evidence stays available in
+    session memory for continuation and consistency checks.
+    """
+    script1 = [
+        tool_call_response(tc("c1", "get_order_details", ORDER_1001)),
+        tool_call_response(tc("c2", "check_return_policy", POLICY_1001)),
+        tool_call_response(tc("c3", "process_refund", REFUND_1001)),
+        final_response(approved_final(tools_called=THREE_TOOL_FLOW)),
+    ]
+    agent1, _ = make_agent(script1, kit)
+    run1 = agent1.handle_customer_message("Refund ORD-1001, damaged on arrival.")
+    assert run1.result.status is FinalStatus.COMPLETED
+    turn1_history = len(run1.state.tool_history)
+
+    script2 = [
+        tool_call_response(tc("d1", "get_order_details", ORDER_1010)),
+        tool_call_response(tc("d2", "check_return_policy", POLICY_1010)),
+        tool_call_response(tc("d3", "process_refund", REFUND_1010)),
+        final_response(
+            json.dumps(
+                {
+                    "status": "COMPLETED",
+                    "reasoning_chain": [
+                        "Verified ORD-1010",
+                        "Policy verdict ELIGIBLE",
+                        "process_refund returned APPROVED",
+                    ],
+                    "action_taken": {
+                        "tools_called": list(THREE_TOOL_FLOW),
+                        "cases": [
+                            {
+                                "order_id": "ORD-1010",
+                                "decision": "AUTO_REFUND_APPROVED",
+                                "refund_amount": 48.0,
+                                "refund_id": "RF-1010-4800",
+                                "policy_verdict": "ELIGIBLE",
+                            }
+                        ],
+                    },
+                    "customer_response": "Your refund was approved for order ORD-1010.",
+                }
+            )
+        ),
+    ]
+    provider2 = FakeProvider(script2)
+    agent2 = OperationsResolverAgent(Settings(), provider2, kit)
+    run2 = agent2.handle_customer_message(
+        "Now refund ORD-1010 as well, it also arrived damaged.", previous=run1
+    )
+
+    assert run2.result.status is FinalStatus.COMPLETED
+    # action_taken describes the current turn only: no ORD-1001 re-report.
+    assert [case.order_id for case in run2.result.action_taken.cases] == ["ORD-1010"]
+    assert run2.result.action_taken.cases[0].refund_id == "RF-1010-4800"
+    # Trusted prior-turn evidence remains in session memory.
+    prior = run2.state.cases["ORD-1001"]
+    assert prior.refund_result["status"] == "APPROVED"
+    assert prior.decision is Decision.AUTO_REFUND_APPROVED
+    # Turn-scoped validation passes for the exact output the runtime accepted.
+    assert validate_result(run2.result, run2.state, turn_start_history=turn1_history) == []
+    # Whole-session validation of the same output would wrongly demand the
+    # prior turn's resolved case - proof that the scope is the current turn.
+    session_issues = validate_result(run2.result, run2.state)
+    assert any("ORD-1001" in issue and "missing from" in issue for issue in session_issues)
