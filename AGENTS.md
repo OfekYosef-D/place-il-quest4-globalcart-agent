@@ -5,10 +5,11 @@ These instructions are authoritative for any coding agent working in this reposi
 ## Before changing code
 
 1. Read `docs/IMPLEMENTATION_SPEC.md` in full.
-2. Read `docs/MILESTONES.md` in full.
-3. Read `docs/UPSTREAM.md` in full.
-4. If the upstream Quest material is available locally, inspect the actual supplied files before making assumptions about business rules or tool behavior.
-5. Work on exactly one milestone at a time unless the user explicitly asks otherwise.
+2. Read `docs/GUARDRAILS.md` in full.
+3. Read `docs/MILESTONES.md` in full.
+4. Read `docs/UPSTREAM.md` in full.
+5. If the upstream Quest material is available locally, inspect the actual supplied files before making assumptions about business rules or tool behavior.
+6. Work on exactly one milestone at a time unless the user explicitly asks otherwise.
 
 ## Facts-first rule
 
@@ -57,9 +58,12 @@ Do not introduce in Stage 1:
 - Trusted tool results are the source of business truth.
 - Never tell a customer a refund was issued unless `process_refund` actually returned `APPROVED`.
 - If `check_return_policy` returns `eligible=false`, reject using that trusted result and do not call `process_refund` merely to obtain the same rejection again.
+- Before executing `process_refund`, runtime must already hold a trusted `check_return_policy` result for that same case/order with `eligible == true`. Otherwise block the tool call, record a guardrail event, and let the model recover within normal loop limits.
+- Customer-facing responses must not expose internal risk/security details such as fraud scores, fraud flags, internal repeat-claim counts, LTV, raw internal field names, or exact internal risk thresholds.
 - A terminal business error such as `ORDER_NOT_FOUND` stops the case even if fewer than two tools were called.
 - Missing required customer information results in `NEEDS_CLARIFICATION`; do not guess.
 - Sentiment and urgency may affect wording, never refund eligibility or authority.
+- `docs/GUARDRAILS.md` is an authoritative safety addendum and must be implemented/tested in Milestone 2.
 
 ## Agent-loop discipline
 
@@ -101,6 +105,6 @@ Correctness and safety are mandatory. Efficiency is a quality metric, not a corr
 A run can be:
 - clean pass: correct and efficient;
 - pass with warning: correct but includes harmless unnecessary work;
-- critical failure: wrong business decision, hallucination, false refund claim, unsafe output, or uncontrolled loop.
+- critical failure: wrong business decision, hallucination, false refund claim, unsafe output, guardrail bypass, sensitive internal-risk disclosure, or uncontrolled loop.
 
 Never force the agent into a hardcoded workflow solely to optimize the minimum tool-call count.
