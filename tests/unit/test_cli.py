@@ -27,6 +27,7 @@ def _synthetic_run(with_repair=False, with_cost=False) -> AgentRun:
             arguments={"order_id": "ORD-1001"},
             outcome=ToolInteractionOutcome.EXECUTED,
             result={"order_id": "ORD-1001", "status": "delivered"},
+            duration_ms=1.25,
         )
     )
     state.tool_history.append(
@@ -62,7 +63,13 @@ def _synthetic_run(with_repair=False, with_cost=False) -> AgentRun:
         ModelCallRecord(step=2, provider="groq", model="fake", kind="final", latency_ms=8.0, total_tokens=10),
     ]
     if with_repair:
-        model_calls.append(ModelCallRecord(step=2, provider="repair-pass", model="repair-pass", kind="repair"))
+        # The repair pass is a real model call with real metadata (fix 7).
+        model_calls.append(
+            ModelCallRecord(
+                step=2, provider="groq", model="fake", kind="repair",
+                latency_ms=5.0, total_tokens=8, retries=0,
+            )
+        )
     summary = RunSummary(
         llm_calls=len(model_calls),
         tool_calls=2,
@@ -97,7 +104,8 @@ def test_verbose_trace_covers_steps_tools_blocks_assessment_summary():
     trace = format_verbose_trace(run)
 
     assert "[step 1] model tool_call: groq/fake, latency=12ms, tokens=15, retries=1" in trace
-    assert "[step 1] tool get_order_details: EXECUTED" in trace
+    assert "[step 2] model repair: groq/fake, latency=5ms, tokens=8" in trace
+    assert "[step 1] tool get_order_details: EXECUTED, duration=1.25ms" in trace
     assert "[step 2] tool process_refund: BLOCKED, reason=MISSING_ELIGIBLE_POLICY_PRECONDITION" in trace
     assert "BLOCKED process_refund: MISSING_ELIGIBLE_POLICY_PRECONDITION" in trace
     assert "repair pass used: True" in trace
@@ -148,6 +156,25 @@ def test_main_missing_config_exits_with_code_2(monkeypatch, capsys):
     assert exit_code == 2
     assert "GROQ_API_KEY" in captured.err
     assert "LLM_MODEL" in captured.err
+
+
+def test_build_agent_rejects_unsupported_provider():
+    """Fix 10: non-groq LLM_PROVIDER fails startup with an actionable error."""
+    settings = Settings(groq_api_key="key", llm_model="model", llm_provider="openai")
+    with pytest.raises(CliConfigError, match="LLM_PROVIDER"):
+        run_agent.build_agent(settings)
+
+
+def test_main_unsupported_provider_exits_with_code_2(monkeypatch, capsys):
+    monkeypatch.setattr(
+        run_agent,
+        "load_settings",
+        lambda: Settings(groq_api_key="key", llm_model="model", llm_provider="anthropic"),
+    )
+    exit_code = main(["--message", "hello"])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "LLM_PROVIDER" in captured.err
 
 
 def test_main_one_shot_runs_agent_and_prints_customer_output(monkeypatch, capsys):

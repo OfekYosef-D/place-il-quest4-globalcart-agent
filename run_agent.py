@@ -61,6 +61,12 @@ def ensure_llm_config(settings: Settings) -> None:
 
 def build_agent(settings: Settings) -> OperationsResolverAgent:
     ensure_llm_config(settings)
+    if settings.llm_provider.strip().lower() != "groq":
+        raise CliConfigError(
+            f"Unsupported LLM_PROVIDER {settings.llm_provider!r}: the Stage 1 "
+            "implementation supports only 'groq'. Set LLM_PROVIDER=groq in .env "
+            "or the environment (see .env.example)."
+        )
     provider = GroqProvider(settings)
     kit = load_toolkit(settings.quest4_starter_kit_path)
     return OperationsResolverAgent(settings, provider, kit)
@@ -94,9 +100,14 @@ def format_verbose_trace(run: AgentRun) -> str:
     for interaction in run.tool_interactions:
         cache_note = " (cache hit)" if interaction.outcome.value == "CACHED" else ""
         reason_note = f", reason={interaction.reason_code}" if interaction.reason_code else ""
+        duration_note = (
+            f", duration={interaction.duration_ms:.2f}ms"
+            if interaction.duration_ms is not None
+            else ""
+        )
         lines.append(
             f"[step {interaction.step}] tool {interaction.tool_name}{cache_note}: "
-            f"{interaction.outcome.value}{reason_note}, "
+            f"{interaction.outcome.value}{reason_note}{duration_note}, "
             f"args={json.dumps(interaction.arguments, sort_keys=True)}"
             f"{_result_summary(interaction.result)}"
         )

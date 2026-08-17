@@ -48,13 +48,19 @@ def _repair(provider, messages=None):
 
 def test_malformed_first_valid_correction_accepted_without_tools():
     provider = FakeProvider([final_response(json.dumps(VALID_RESULT))])
-    result, assessment = _repair(provider)
+    outcome = _repair(provider)
 
-    assert result.status.value == "COMPLETED"
-    assert result.action_taken.cases[0].refund_id == "RF-1001-3500"
-    assert assessment == ModelAssessment()
+    assert outcome.result.status.value == "COMPLETED"
+    assert outcome.result.action_taken.cases[0].refund_id == "RF-1001-3500"
+    assert outcome.assessment == ModelAssessment()
     assert len(provider.calls) == 1
     assert provider.calls[0][1] is None, "repair must call the provider with tools=None"
+    # Real model-call metadata travels with the accepted repair (fix 7).
+    assert outcome.attempts == 1
+    assert outcome.response.provider == "fake"
+    assert outcome.response.model == "fake-model"
+    assert outcome.response.total_tokens == 15
+    assert outcome.response.latency_ms == 1.0
 
 
 def test_caller_messages_are_never_contaminated():
@@ -86,8 +92,9 @@ def test_repair_response_requesting_tool_calls_raises():
 
 def test_transient_failure_retried_within_single_repair_attempt():
     provider = FakeProvider([TransientLLMFailure("503"), final_response(json.dumps(VALID_RESULT))])
-    result, _ = _repair(provider)
-    assert result.status.value == "COMPLETED"
+    outcome = _repair(provider)
+    assert outcome.result.status.value == "COMPLETED"
+    assert outcome.attempts == 2, "metadata reflects the real retry count"
     assert len(provider.calls) == 2
 
 
@@ -108,10 +115,10 @@ def test_non_transient_failure_raises_repair_failed_without_retry():
 def test_assessment_is_preserved_through_repair():
     payload = dict(VALID_RESULT, sentiment="frustrated", urgency="high")
     provider = FakeProvider([final_response(json.dumps(payload))])
-    result, assessment = _repair(provider)
-    assert assessment.sentiment == "frustrated"
-    assert assessment.urgency == "high"
-    assert set(result.model_dump()) == {
+    outcome = _repair(provider)
+    assert outcome.assessment.sentiment == "frustrated"
+    assert outcome.assessment.urgency == "high"
+    assert set(outcome.result.model_dump()) == {
         "status",
         "reasoning_chain",
         "action_taken",

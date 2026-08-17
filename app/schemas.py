@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Decision(str, Enum):
@@ -32,6 +32,8 @@ class FinalStatus(str, Enum):
 class CaseResult(BaseModel):
     """Outcome for one order, grounded in trusted tool evidence."""
 
+    model_config = ConfigDict(extra="forbid")
+
     order_id: str
     decision: Decision
     refund_amount: float | None = None
@@ -44,6 +46,8 @@ class CaseResult(BaseModel):
 class ActionTaken(BaseModel):
     """What the agent did: tools called and per-case outcomes."""
 
+    model_config = ConfigDict(extra="forbid")
+
     tools_called: list[str] = Field(default_factory=list)
     cases: list[CaseResult] = Field(default_factory=list)
 
@@ -54,7 +58,13 @@ class AgentResult(BaseModel):
     `reasoning_chain` must be explicitly supplied with at least one step and
     `customer_response` must be non-empty — a final output without them is
     malformed and fails validation rather than silently defaulting.
+
+    The contract is strict and frozen: unexpected extra fields fail parsing
+    (the parser strips the internal `sentiment`/`urgency` audit keys before
+    validation; anything else unknown is a model error handled by repair).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     status: FinalStatus
     reasoning_chain: list[str] = Field(min_length=1)

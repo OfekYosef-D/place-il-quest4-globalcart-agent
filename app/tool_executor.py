@@ -16,6 +16,7 @@ results to runtime state. Design notes:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from app.guardrail import blocked_tool_observation, check_refund_precondition
@@ -114,21 +115,25 @@ class ToolExecutor:
                 )
                 return blocked_tool_observation(event), interaction
 
+        cache_start = time.perf_counter()
         cached = self._cache.get(name, arguments)
         if cached is not None:
             interaction = self._record(
                 state, step, name, arguments, ToolInteractionOutcome.CACHED, result=cached
             )
+            interaction.duration_ms = (time.perf_counter() - cache_start) * 1000.0
             # Same deterministic state application as a fresh execution.
             self._apply_trusted_result(state, name, arguments, cached)
             return json.dumps(cached, ensure_ascii=False), interaction
 
+        exec_start = time.perf_counter()
         try:
             result = self._kit.call(name, **arguments)
         except Exception as exc:  # programmer/system failure: fail safe, never retry
             interaction = self._record(
                 state, step, name, arguments, ToolInteractionOutcome.SYSTEM_FAILURE
             )
+            interaction.duration_ms = (time.perf_counter() - exec_start) * 1000.0
             raise ToolSystemFailure(
                 f"System failure while executing tool {name!r}: {exc}", interaction
             ) from exc
@@ -146,6 +151,7 @@ class ToolExecutor:
             result=result,
             reason_code=result.get("error") if outcome is ToolInteractionOutcome.BUSINESS_ERROR else None,
         )
+        interaction.duration_ms = (time.perf_counter() - exec_start) * 1000.0
         self._cache.put(name, arguments, result)
         self._apply_trusted_result(state, name, arguments, result)
         return json.dumps(result, ensure_ascii=False), interaction

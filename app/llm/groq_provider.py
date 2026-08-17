@@ -16,7 +16,12 @@ from typing import Any
 import openai
 
 from app.config import Settings
-from app.llm.base import ModelResponse, ToolCallRequest, TransientLLMFailure
+from app.llm.base import (
+    ModelResponse,
+    ToolCallRequest,
+    TransientLLMFailure,
+    ensure_unique_tool_call_ids,
+)
 from app.messages import (
     AssistantToolCallMessage,
     CanonicalMessage,
@@ -67,28 +72,40 @@ def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
         if isinstance(message, CanonicalMessage):
             wire.append({"role": message.role, "content": message.content})
         elif isinstance(message, AssistantToolCallMessage):
+            missing = [tc.name for tc in message.tool_calls if not tc.id]
+            if missing:
+                raise ValueError(
+                    "AssistantToolCallMessage contains tool calls without "
+                    f"ids ({', '.join(missing)}); ids are guaranteed at the "
+                    "provider boundary and must be preserved end-to-end."
+                )
             wire.append(
                 {
                     "role": "assistant",
                     "content": message.content,
                     "tool_calls": [
                         {
-                            "id": tc.id or f"call_{index}",
+                            "id": tc.id,
                             "type": "function",
                             "function": {
                                 "name": tc.name,
                                 "arguments": json.dumps(tc.arguments),
                             },
                         }
-                        for index, tc in enumerate(message.tool_calls)
+                        for tc in message.tool_calls
                     ],
                 }
             )
         elif isinstance(message, ToolObservationMessage):
+            if not message.tool_call_id:
+                raise ValueError(
+                    "ToolObservationMessage is missing tool_call_id; observation "
+                    "correlation must never fall back to an ambiguous placeholder."
+                )
             wire.append(
                 {
                     "role": "tool",
-                    "tool_call_id": message.tool_call_id or "call_0",
+                    "tool_call_id": message.tool_call_id,
                     "content": message.content,
                 }
             )
@@ -129,7 +146,7 @@ def normalize_response(
     usage = getattr(raw, "usage", None)
     raw_usage = usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else None
 
-    return ModelResponse(
+    response = ModelResponse(
         content=getattr(message, "content", None),
         tool_calls=tool_calls,
         provider=provider,
@@ -140,6 +157,9 @@ def normalize_response(
         latency_ms=latency_ms,
         raw_usage=raw_usage,
     )
+    # Provider boundary: every requested tool call leaves with a stable,
+    # non-empty, unique id so observations can always be correlated.
+    return ensure_unique_tool_call_ids(response)
 
 
 class GroqProvider:

@@ -197,16 +197,40 @@ def test_wire_conversion_of_tool_exchange_preserves_call_id():
     assert tool["content"] == '{"status": "delivered"}'
 
 
-def test_wire_conversion_generates_placeholder_ids_when_missing():
-    messages = [
-        AssistantToolCallMessage(
-            tool_calls=[ToolCallRequest(id=None, name="get_user_profile", arguments={})]
-        ),
-        ToolObservationMessage(tool_call_id=None, tool_name="get_user_profile", content="{}"),
-    ]
-    wire = to_wire_messages(messages)
-    assert wire[0]["tool_calls"][0]["id"] == "call_0"
-    assert wire[1]["tool_call_id"] == "call_0"
+def test_wire_conversion_requires_tool_call_ids():
+    """Ambiguous placeholder fallbacks are gone: missing ids fail loudly."""
+    with pytest.raises(ValueError, match="without.*ids"):
+        to_wire_messages(
+            [
+                AssistantToolCallMessage(
+                    tool_calls=[ToolCallRequest(id=None, name="get_user_profile", arguments={})]
+                )
+            ]
+        )
+    with pytest.raises(ValueError, match="tool_call_id"):
+        to_wire_messages(
+            [ToolObservationMessage(tool_call_id=None, tool_name="get_user_profile", content="{}")]
+        )
+
+
+def test_normalize_response_assigns_unique_ids_when_provider_omits_them():
+    """Fix 8: multiple raw tool calls with missing ids get stable unique ids."""
+    raw = _fake_completion(
+        tool_calls=[
+            _fake_tool_call("get_order_details", '{"order_id": "ORD-1001"}', call_id=None),
+            _fake_tool_call("get_user_profile", '{"user_id": "USR-101"}', call_id=None),
+            _fake_tool_call("check_return_policy", '{"order_id": "ORD-1001"}', call_id="call_keep"),
+        ]
+    )
+
+    response = normalize_response(
+        raw, provider="groq", fallback_model="fallback", latency_ms=1.0
+    )
+
+    ids = [call.id for call in response.tool_calls]
+    assert all(ids), "every tool call must carry a non-empty id"
+    assert len(set(ids)) == 3, "generated ids must be unique across the batch"
+    assert ids[2] == "call_keep", "provider-supplied ids are preserved exactly"
 
 
 def test_wire_conversion_rejects_unknown_message_types():

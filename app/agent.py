@@ -18,10 +18,12 @@ One agent loop with probabilistic intelligence and deterministic guardrails:
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass, field
 
-from app.llm.base import LLMProvider, TransientLLMFailure
+from app.llm.base import LLMProvider, TransientLLMFailure, ensure_unique_tool_call_ids
 from app.llm.retry import generate_with_retry
 from app.messages import (
     AssistantToolCallMessage,
@@ -61,6 +63,22 @@ _STATUS_MAP = {
     FinalStatus.NEEDS_CLARIFICATION: RuntimeStatus.NEEDS_CLARIFICATION,
     FinalStatus.FAILED_SAFE: RuntimeStatus.FAILED_SAFE,
 }
+
+#: Observation used to close outstanding tool calls after a system failure.
+#: Protocol cleanup only - no tool is executed and no retry is implied.
+_CANCELLED_TOOL_OBSERVATION = json.dumps(
+    {
+        "error": "SYSTEM_FAILURE",
+        "message": (
+            "This tool call was cancelled due to an internal system failure. "
+            "No result is available and it will not be retried."
+        ),
+    },
+    ensure_ascii=False,
+)
+
+#: Narrow Hebrew-character check for fail-safe wording language selection.
+_HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
 
 
 @dataclass
@@ -143,6 +161,11 @@ class OperationsResolverAgent:
                 )
             )
 
+            # Defense in depth: even if a provider skipped boundary id
+            # normalization, canonical tool exchanges always carry stable,
+            # non-empty, unique tool_call ids.
+            response = ensure_unique_tool_call_ids(response)
+
             if response.tool_calls:
                 duplicate_step = self._all_calls_duplicate(response.tool_calls, state)
                 state.messages.append(
@@ -150,7 +173,7 @@ class OperationsResolverAgent:
                         content=response.content, tool_calls=list(response.tool_calls)
                     )
                 )
-                for call in response.tool_calls:
+                for index, call in enumerate(response.tool_calls):
                     try:
                         observation, interaction = executor.execute(
                             state.step_count, call, state
@@ -158,6 +181,11 @@ class OperationsResolverAgent:
                     except ToolSystemFailure as exc:
                         # Not a recoverable business error: traced, fail safe.
                         failure_reason = f"TOOL_SYSTEM_FAILURE: {exc}"
+                        # Protocol cleanup only: close every outstanding
+                        # tool_call_id so the stored conversation remains a
+                        # valid tool exchange. Remaining tools never execute
+                        # and the model is not invoked again this turn.
+                        _close_outstanding_calls(state.messages, response.tool_calls[index:])
                         break
                     state.messages.append(
                         ToolObservationMessage(
@@ -190,10 +218,24 @@ class OperationsResolverAgent:
         else:
             state.failure_reason = None
 
+        # Accepted CaseResult decisions mirror into CaseState for short-term
+        # audit/continuation; trusted tool evidence stays authoritative.
+        for case_result in result.action_taken.cases:
+            case = state.cases.get(case_result.order_id)
+            if case is not None:
+                case.decision = case_result.decision
+
         state.sentiment = assessment.sentiment if assessment is not None else None
         state.urgency = assessment.urgency if assessment is not None else None
         state.final_result = result
         state.status = _STATUS_MAP[result.status]
+
+        # The next customer turn must see the conversation the customer
+        # actually experienced: append the delivered response. Repair-internal
+        # messages are ephemeral and never reach conversation state.
+        state.messages.append(
+            CanonicalMessage(role="assistant", content=result.customer_response)
+        )
 
         return AgentRun(
             result=result,
@@ -275,7 +317,7 @@ class OperationsResolverAgent:
 
         if result is None:
             try:
-                repaired, assessment = repair_final_output(
+                repair = repair_final_output(
                     self._provider,
                     state.messages,
                     content,
@@ -285,18 +327,28 @@ class OperationsResolverAgent:
                 )
             except RepairFailed as exc:
                 return None, None, f"OUTPUT_REPAIR_FAILED: {exc}"
+            # The repair pass is a real model call: preserve its actual
+            # provider/model/latency/token/retry metadata so it reaches the
+            # trace and RunSummary totals like any other call.
             model_calls.append(
                 ModelCallRecord(
                     step=state.step_count,
-                    provider="repair-pass",
-                    model="repair-pass",
+                    provider=repair.response.provider,
+                    model=repair.response.model,
                     kind="repair",
+                    latency_ms=repair.response.latency_ms,
+                    input_tokens=repair.response.input_tokens,
+                    output_tokens=repair.response.output_tokens,
+                    total_tokens=repair.response.total_tokens,
+                    attempt=repair.attempts,
+                    retries=repair.attempts - 1,
                 )
             )
-            issues = validate_result(repaired, state)
+            issues = validate_result(repair.result, state)
             if issues:
                 return None, None, f"VALIDATION_FAILED_AFTER_REPAIR: {'; '.join(issues)}"
-            result = repaired
+            result = repair.result
+            assessment = repair.assessment
 
         return result, assessment, None
 
@@ -308,10 +360,13 @@ class OperationsResolverAgent:
         """Deterministic FAILED_SAFE output grounded in trusted evidence.
 
         Resolved case outcomes are preserved exactly as the evidence supports
-        them; only genuinely unresolved cases are escalated for human review
-        (spec section 13, validator rule 9, execution clarification 4).
+        them. Human-review wording appears only for genuinely unresolved cases:
+        when every known case already has a trusted terminal outcome, those
+        outcomes are reported directly (spec section 13, validator rule 9,
+        execution clarification 4, review fix 6).
         """
         cases = [_case_result_from_evidence(case) for case in _ordered_cases(state)]
+        has_unresolved = any(_is_unresolved_escalation(case) for case in cases)
         tools_called = sorted(
             {
                 interaction.tool_name
@@ -320,19 +375,21 @@ class OperationsResolverAgent:
             }
         )
 
-        if cases:
-            lines = "; ".join(
-                f"Order {case.order_id}: {_case_customer_line(case)}" for case in cases
-            )
-            response = (
-                "We were unable to complete processing of your request, so a human "
-                f"agent will review it. Status by order - {lines}"
-            )
+        wording = _FAIL_SAFE_WORDING[_latest_customer_language(state)]
+        if not cases:
+            response = wording["no_cases"]
         else:
-            response = (
-                "We were unable to complete processing of your request. A human "
-                "agent will review it and follow up with you."
+            lines = "; ".join(
+                f"{wording['order_prefix']}{case.order_id}: "
+                f"{_case_customer_line(case, wording)}"
+                for case in cases
             )
+            if has_unresolved:
+                response = (
+                    f"{wording['unresolved_preamble']} {wording['status_by_order']} {lines}"
+                )
+            else:
+                response = lines
 
         return AgentResult(
             status=FinalStatus.FAILED_SAFE,
@@ -375,8 +432,80 @@ class OperationsResolverAgent:
 # ----------------------------------------------------------------------
 
 
+#: Deterministic fail-safe customer wording per supported language. The
+#: customer's language is detected with a narrow Hebrew-character check on
+#: the latest customer message; anything else defaults to English.
+_FAIL_SAFE_WORDING = {
+    "en": {
+        "no_cases": (
+            "We were unable to complete processing of your request. A human "
+            "agent will review it and follow up with you."
+        ),
+        "unresolved_preamble": (
+            "We were unable to complete processing of your request, so a "
+            "human agent will review it."
+        ),
+        "status_by_order": "Status by order -",
+        "order_prefix": "Order ",
+        "refund_approved": "your refund was approved (refund id {refund_id}).",
+        "rejected": "the request could not be approved under the return policy.",
+        "no_action": "we could not verify this order; please confirm the order number.",
+        "escalation": "requires additional review by a human agent.",
+    },
+    "he": {
+        "no_cases": (
+            "לא הצלחנו להשלים את הטיפול בפנייה שלך. נציג אנושי יבדוק אותה ויחזור אליך."
+        ),
+        "unresolved_preamble": (
+            "לא הצלחנו להשלים את הטיפול בפנייה שלך, ולכן נציג אנושי יבדוק אותה."
+        ),
+        "status_by_order": "סטטוס לפי הזמנה -",
+        "order_prefix": "הזמנה ",
+        "refund_approved": "ההחזר הכספי שלך אושר (מספר החזר {refund_id}).",
+        "rejected": "הבקשה לא אושרה בהתאם למדיניות ההחזרות.",
+        "no_action": "לא הצלחנו לאמת הזמנה זו; נא לוודא את מספר ההזמנה.",
+        "escalation": "נדרשת בדיקה נוספת על ידי נציג אנושי.",
+    },
+}
+
+
+def _close_outstanding_calls(messages: list, outstanding: list) -> None:
+    """Protocol cleanup after a tool system failure.
+
+    Every still-open tool_call_id from the assistant tool-call message gets a
+    canonical cancellation observation, so the stored conversation stays a
+    valid tool exchange for future continuation. No tool is executed here and
+    the model is never re-invoked in the failed turn.
+    """
+    for call in outstanding:
+        messages.append(
+            ToolObservationMessage(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                content=_CANCELLED_TOOL_OBSERVATION,
+            )
+        )
+
+
+def _latest_customer_language(state: AgentState) -> str:
+    """Narrow Hebrew-character check on the latest customer message."""
+    for message in reversed(state.messages):
+        if isinstance(message, CanonicalMessage) and message.role == "user":
+            return "he" if _HEBREW_RE.search(message.content) else "en"
+    return "en"
+
+
 def _ordered_cases(state: AgentState) -> list[CaseState]:
     return [state.cases[order_id] for order_id in sorted(state.cases)]
+
+
+def _is_unresolved_escalation(case_result: CaseResult) -> bool:
+    """True only for the fail-safe placeholder escalation of genuinely
+    unresolved cases, never for trusted ESCALATION_REQUIRED evidence."""
+    return (
+        case_result.decision is Decision.HUMAN_ESCALATION
+        and "UNRESOLVED_AT_FAILURE" in case_result.escalation_reasons
+    )
 
 
 def _case_result_from_evidence(case: CaseState) -> CaseResult:
@@ -428,12 +557,12 @@ def _case_result_from_evidence(case: CaseState) -> CaseResult:
     )
 
 
-def _case_customer_line(case: CaseResult) -> str:
-    """Customer-safe wording per resolved case; never implies a false refund."""
+def _case_customer_line(case: CaseResult, wording: dict[str, str]) -> str:
+    """Customer-safe wording per case; never implies a false refund."""
     if case.decision is Decision.AUTO_REFUND_APPROVED:
-        return f"your refund was approved (refund id {case.refund_id})."
+        return wording["refund_approved"].format(refund_id=case.refund_id)
     if case.decision is Decision.REJECTED:
-        return "the request could not be approved under the return policy."
+        return wording["rejected"]
     if case.decision is Decision.NO_ACTION:
-        return "we could not verify this order; please confirm the order number."
-    return "requires additional review by a human agent."
+        return wording["no_action"]
+    return wording["escalation"]

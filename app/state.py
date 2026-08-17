@@ -57,6 +57,8 @@ class ToolInteraction(BaseModel):
     result: dict[str, Any] | None = None
     #: Guardrail reason code or business error code, when applicable.
     reason_code: str | None = None
+    #: Measured duration of the interaction (execution or cache service).
+    duration_ms: float | None = None
 
 
 class CaseState(BaseModel):

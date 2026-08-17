@@ -88,3 +88,20 @@ def test_non_string_or_blank_assessment_becomes_none():
     _, assessment = parse_final_output(json.dumps(payload))
     assert assessment.sentiment is None
     assert assessment.urgency is None
+
+
+def test_unexpected_top_level_extra_fields_fail_parsing():
+    """Fix 9: sentiment/urgency are the only tolerated internal keys."""
+    payload = dict(VALID_RESULT, confidence=0.9, recommendation="approve")
+    with pytest.raises(OutputParseError, match="schema validation"):
+        parse_final_output(json.dumps(payload))
+
+
+def test_unexpected_nested_extra_fields_fail_parsing():
+    payload = dict(VALID_RESULT)
+    payload["action_taken"] = dict(payload["action_taken"])
+    payload["action_taken"]["cases"] = [
+        dict(payload["action_taken"]["cases"][0], confidence=0.5)
+    ]
+    with pytest.raises(OutputParseError, match="schema validation"):
+        parse_final_output(json.dumps(payload))

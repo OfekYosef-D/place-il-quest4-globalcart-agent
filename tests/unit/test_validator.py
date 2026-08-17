@@ -6,15 +6,17 @@ consistency checks.
 """
 
 from app.schemas import ActionTaken, AgentResult, CaseResult, Decision, FinalStatus
-from app.state import AgentState, CaseState
+from app.state import AgentState, CaseState, ToolInteraction, ToolInteractionOutcome
 from app.validator import validate_result
 
 
-def _result(cases, response="Thank you for your patience.", status=FinalStatus.COMPLETED):
+def _result(
+    cases, response="Thank you for your patience.", status=FinalStatus.COMPLETED, tools_called=None
+):
     return AgentResult(
         status=status,
         reasoning_chain=["Checked policy"],
-        action_taken=ActionTaken(tools_called=[], cases=cases),
+        action_taken=ActionTaken(tools_called=tools_called or [], cases=cases),
         customer_response=response,
     )
 
@@ -247,3 +249,223 @@ def test_failed_safe_contradicting_escalation_evidence_fails():
     )
     issues = validate_result(result, state)
     assert issues, "FAILED_SAFE must never permit contradicting trusted evidence"
+
+
+# ----------------------------------------------------------------------
+# Multi-order completeness (fix 3)
+# ----------------------------------------------------------------------
+
+
+def test_resolved_case_missing_from_output_fails():
+    state = _approved_state()
+    issues = validate_result(_result([]), state)
+    assert any("missing from" in issue for issue in issues)
+
+
+def test_failed_safe_may_not_drop_resolved_cases():
+    state = _approved_state()
+    issues = validate_result(_result([], status=FinalStatus.FAILED_SAFE), state)
+    assert any("missing from" in issue for issue in issues), (
+        "FAILED_SAFE may omit genuinely unresolved cases only, never resolved ones"
+    )
+
+
+def test_unresolved_case_may_be_absent_from_failed_safe_output():
+    state = AgentState()
+    state.cases["ORD-1005"] = CaseState(order_id="ORD-1005")
+    assert validate_result(_result([], status=FinalStatus.FAILED_SAFE), state) == []
+
+
+def test_duplicate_case_in_output_fails():
+    state = _approved_state()
+    case = CaseResult(
+        order_id="ORD-1001",
+        decision=Decision.AUTO_REFUND_APPROVED,
+        refund_amount=35.0,
+        refund_id="RF-1001-3500",
+    )
+    issues = validate_result(_result([case, case]), state)
+    assert any("more than once" in issue for issue in issues)
+
+
+# ----------------------------------------------------------------------
+# Deterministic outcome/action consistency (fix 4)
+# ----------------------------------------------------------------------
+
+
+def test_rejected_process_refund_requires_rejected_decision():
+    state = AgentState()
+    state.cases["ORD-1004"] = CaseState(
+        order_id="ORD-1004",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "REJECTED", "reasons": ["REFUND_CAP_EXCEEDED"]},
+    )
+    wrong = _result([CaseResult(order_id="ORD-1004", decision=Decision.HUMAN_ESCALATION)])
+    issues = validate_result(wrong, state)
+    assert any("status is REJECTED" in issue for issue in issues)
+
+    consistent = _result([CaseResult(order_id="ORD-1004", decision=Decision.REJECTED)])
+    assert validate_result(consistent, state) == []
+
+
+def _history_state():
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(
+        order_id="ORD-1001",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "APPROVED", "approved_amount": 35.0, "refund_id": "RF-1001-3500"},
+    )
+    state.tool_history.extend(
+        [
+            ToolInteraction(
+                step=1,
+                tool_name="get_order_details",
+                arguments={"order_id": "ORD-1001"},
+                outcome=ToolInteractionOutcome.EXECUTED,
+                result={"order_id": "ORD-1001"},
+            ),
+            ToolInteraction(
+                step=2,
+                tool_name="check_return_policy",
+                arguments={"order_id": "ORD-1001"},
+                outcome=ToolInteractionOutcome.CACHED,
+                result={"eligible": True},
+            ),
+            ToolInteraction(
+                step=3,
+                tool_name="process_refund",
+                arguments={"order_id": "ORD-1001", "amount": 35.0},
+                outcome=ToolInteractionOutcome.BLOCKED,
+                reason_code="MISSING_ELIGIBLE_POLICY_PRECONDITION",
+            ),
+            ToolInteraction(
+                step=4,
+                tool_name="process_refund",
+                arguments={"order_id": "ORD-1001", "amount": 35.0},
+                outcome=ToolInteractionOutcome.EXECUTED,
+                result={"status": "APPROVED"},
+            ),
+        ]
+    )
+    return state
+
+
+def _approved_case_result():
+    return CaseResult(
+        order_id="ORD-1001",
+        decision=Decision.AUTO_REFUND_APPROVED,
+        refund_amount=35.0,
+        refund_id="RF-1001-3500",
+    )
+
+
+def test_tools_called_must_match_executed_tools_exactly():
+    """Factual executed/cache-served set; blocked calls never count; no
+    exact workflow or call order is required."""
+    state = _history_state()
+    factual = ["check_return_policy", "get_order_details", "process_refund"]
+    base_cases = [_approved_case_result()]
+
+    assert validate_result(_result(base_cases, tools_called=factual), state) == []
+
+    invented = _result(base_cases, tools_called=factual + ["get_user_profile"])
+    assert any("invents" in issue for issue in validate_result(invented, state))
+
+    omitted = _result(base_cases, tools_called=["get_order_details"])
+    assert any("omits" in issue for issue in validate_result(omitted, state))
+
+    duplicated = _result(base_cases, tools_called=factual + ["process_refund"])
+    assert any("duplicates" in issue for issue in validate_result(duplicated, state))
+
+
+# ----------------------------------------------------------------------
+# Case-aware customer-response refund claims (fix 5)
+# ----------------------------------------------------------------------
+
+
+def _mixed_outcome_state():
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(
+        order_id="ORD-1001",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "APPROVED", "approved_amount": 35.0, "refund_id": "RF-1001-3500"},
+    )
+    state.cases["ORD-1003"] = CaseState(
+        order_id="ORD-1003",
+        policy_result={"eligible": False, "verdict": "OUTSIDE_RETURN_WINDOW"},
+    )
+    return state
+
+
+def _mixed_cases():
+    return [
+        CaseResult(
+            order_id="ORD-1001",
+            decision=Decision.AUTO_REFUND_APPROVED,
+            refund_amount=35.0,
+            refund_id="RF-1001-3500",
+        ),
+        CaseResult(
+            order_id="ORD-1003",
+            decision=Decision.REJECTED,
+            policy_verdict="OUTSIDE_RETURN_WINDOW",
+        ),
+    ]
+
+
+def test_success_claim_tied_to_unapproved_order_fails():
+    state = _mixed_outcome_state()
+    result = _result(_mixed_cases(), response="Your refund was approved for order ORD-1003.")
+    issues = validate_result(result, state)
+    assert any("ORD-1003" in issue for issue in issues)
+
+    grounded = _result(_mixed_cases(), response="Your refund was approved for order ORD-1001.")
+    assert validate_result(grounded, state) == []
+
+
+def test_blanket_claim_with_mixed_outcomes_fails():
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(
+        order_id="ORD-1001",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "APPROVED", "approved_amount": 35.0, "refund_id": "RF-1001-3500"},
+    )
+    state.cases["ORD-1004"] = CaseState(
+        order_id="ORD-1004",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "REJECTED", "reasons": ["REFUND_CAP_EXCEEDED"]},
+    )
+    cases = [
+        CaseResult(
+            order_id="ORD-1001",
+            decision=Decision.AUTO_REFUND_APPROVED,
+            refund_amount=35.0,
+            refund_id="RF-1001-3500",
+        ),
+        CaseResult(order_id="ORD-1004", decision=Decision.REJECTED),
+    ]
+    result = _result(cases, response="Both refunds were approved.")
+    issues = validate_result(result, state)
+    assert any("blanket" in issue for issue in issues)
+
+
+def test_blanket_claim_allowed_when_every_refund_is_approved():
+    state = AgentState()
+    refunds = (("ORD-1001", "RF-1001-3500"), ("ORD-1006", "RF-1006-2000"))
+    for order_id, refund_id in refunds:
+        state.cases[order_id] = CaseState(
+            order_id=order_id,
+            policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+            refund_result={"status": "APPROVED", "approved_amount": 20.0, "refund_id": refund_id},
+        )
+    cases = [
+        CaseResult(
+            order_id=order_id,
+            decision=Decision.AUTO_REFUND_APPROVED,
+            refund_amount=20.0,
+            refund_id=refund_id,
+        )
+        for order_id, refund_id in refunds
+    ]
+    result = _result(cases, response="Both refunds were approved.")
+    assert validate_result(result, state) == []

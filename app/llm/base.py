@@ -6,6 +6,7 @@ The agent loop must never contain provider-specific logic; it talks to the
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -44,6 +45,23 @@ class ModelResponse(BaseModel):
     latency_ms: float | None = None
     #: Raw provider usage metadata, kept only for debugging.
     raw_usage: dict[str, Any] | None = None
+
+
+def ensure_unique_tool_call_ids(response: ModelResponse) -> ModelResponse:
+    """Guarantee a stable non-empty unique id on every requested tool call.
+
+    Applied at the provider boundary so the runtime can correlate every tool
+    observation with exactly one request. Providers that omit ids get a
+    generated one; the ambiguous "many missing ids share one placeholder"
+    fallback must never return.
+    """
+    if not response.tool_calls or all(call.id for call in response.tool_calls):
+        return response
+    normalized = [
+        call if call.id else call.model_copy(update={"id": f"call_{uuid.uuid4().hex}"})
+        for call in response.tool_calls
+    ]
+    return response.model_copy(update={"tool_calls": normalized})
 
 
 @runtime_checkable

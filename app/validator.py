@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import re
 
-from app.schemas import AgentResult, Decision, FinalStatus
-from app.state import AgentState, CaseState
+from app.schemas import AgentResult, Decision
+from app.state import AgentState, CaseState, ToolInteractionOutcome
 
 #: Customer-facing phrases that assert a refund succeeded.
 REFUND_SUCCESS_PHRASES = (
@@ -25,6 +25,9 @@ REFUND_SUCCESS_PHRASES = (
     "refund was completed",
     "refund has been completed",
     "refund succeeded",
+    "refunds were approved",
+    "refunds have been approved",
+    "refunds are approved",
 )
 
 #: Narrow deterministic disclosure patterns for internal risk/profile signals
@@ -42,10 +45,46 @@ DISCLOSURE_PATTERNS = tuple(
     )
 )
 
+#: Order-id mentions used for case-aware refund-claim checks.
+_ORDER_ID_RE = re.compile(r"\bORD-\w+\b")
+
+#: Sentence boundaries for claim association (kept narrow and deterministic).
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
+
+#: Blanket multi-case claim words ("all/both/every refunds were approved").
+_BLANKET_CLAIM_RE = re.compile(r"\b(all|both|every)\b", re.IGNORECASE)
+
+#: Interaction outcomes that count as a tool actually executed or cache-served.
+#: A business-error result is still a real execution (the supplied tool ran
+#: and returned error data); blocked/invalid/unknown/system-failure requests
+#: were never executed.
+_EXECUTED_OUTCOMES = (
+    ToolInteractionOutcome.EXECUTED,
+    ToolInteractionOutcome.CACHED,
+    ToolInteractionOutcome.BUSINESS_ERROR,
+)
+
 
 def validate_result(result: AgentResult, state: AgentState) -> list[str]:
     """Return consistency violations (empty list means consistent)."""
     issues: list[str] = []
+
+    reported_ids = [case_result.order_id for case_result in result.action_taken.cases]
+    reported_set = set(reported_ids)
+
+    # Each order may appear at most once in the final output.
+    for order_id in sorted({oid for oid in reported_set if reported_ids.count(oid) > 1}):
+        issues.append(f"Case {order_id}: appears more than once in action_taken.cases.")
+
+    # Resolved trusted cases may never silently disappear from the output.
+    # FAILED_SAFE may omit genuinely unresolved cases, never resolved ones.
+    for order_id in sorted(state.cases):
+        case = state.cases[order_id]
+        if _case_is_resolved(case) and order_id not in reported_set:
+            issues.append(
+                f"Case {order_id}: trusted outcome is resolved but missing from "
+                "action_taken.cases."
+            )
 
     for case_result in result.action_taken.cases:
         order_id = case_result.order_id
@@ -58,7 +97,46 @@ def validate_result(result: AgentResult, state: AgentState) -> list[str]:
             continue
         issues.extend(_validate_case(order_id, case_result.decision, case_result, case))
 
+    issues.extend(_validate_tools_called(result, state))
     issues.extend(_validate_customer_response(result, state))
+    return issues
+
+
+def _case_is_resolved(case: CaseState) -> bool:
+    """True when trusted evidence terminally resolves the business outcome."""
+    if case.refund_result is not None or case.terminal_error:
+        return True
+    policy = case.policy_result
+    return isinstance(policy, dict) and policy.get("eligible") is False
+
+
+def _validate_tools_called(result: AgentResult, state: AgentState) -> list[str]:
+    """tools_called must be exactly the factual executed/cache-served tool set."""
+    issues: list[str] = []
+    executed = {
+        interaction.tool_name
+        for interaction in state.tool_history
+        if interaction.outcome in _EXECUTED_OUTCOMES
+    }
+    reported = result.action_taken.tools_called
+    reported_set = set(reported)
+
+    for name in sorted(reported_set - executed):
+        issues.append(
+            f"tools_called invents {name!r}, which was never executed or cache-served."
+        )
+    omitted = sorted(executed - reported_set)
+    if omitted:
+        issues.append(
+            "tools_called omits executed/cache-served tools: "
+            + ", ".join(repr(name) for name in omitted)
+            + "."
+        )
+    duplicates = sorted({name for name in reported_set if reported.count(name) > 1})
+    if duplicates:
+        issues.append(
+            "tools_called lists duplicates: " + ", ".join(repr(name) for name in duplicates) + "."
+        )
     return issues
 
 
@@ -95,17 +173,24 @@ def _validate_case(
             f"Case {order_id}: AUTO_REFUND_APPROVED without a trusted APPROVED process_refund result."
         )
 
-    # Refund fields may only exist alongside an APPROVED result.
-    if not approved and (case_result.refund_amount is not None or case_result.refund_id):
-        issues.append(
-            f"Case {order_id}: refund fields reported without a trusted APPROVED refund result."
-        )
-
     # Trusted ESCALATION_REQUIRED requires human escalation.
     if escalation_required and decision is not Decision.HUMAN_ESCALATION:
         issues.append(
             f"Case {order_id}: trusted refund status is ESCALATION_REQUIRED but decision is "
             f"{decision.value}."
+        )
+
+    # Trusted REJECTED process_refund requires a REJECTED decision.
+    if refund_status == "REJECTED" and decision is not Decision.REJECTED:
+        issues.append(
+            f"Case {order_id}: trusted refund status is REJECTED but decision is "
+            f"{decision.value}."
+        )
+
+    # Refund fields may only exist alongside an APPROVED result.
+    if not approved and (case_result.refund_amount is not None or case_result.refund_id):
+        issues.append(
+            f"Case {order_id}: refund fields reported without a trusted APPROVED refund result."
         )
 
     # Trusted ineligible policy resolves the case as REJECTED.
@@ -145,21 +230,65 @@ def _validate_case(
     return issues
 
 
+def _approved_orders(state: AgentState) -> set[str]:
+    return {
+        order_id
+        for order_id, case in state.cases.items()
+        if isinstance(case.refund_result, dict) and case.refund_result.get("status") == "APPROVED"
+    }
+
+
 def _validate_customer_response(result: AgentResult, state: AgentState) -> list[str]:
     issues: list[str] = []
-    response = result.customer_response.lower()
+    response = result.customer_response
+    approved_orders = _approved_orders(state)
 
-    has_trusted_approval = any(
-        isinstance(case.refund_result, dict) and case.refund_result.get("status") == "APPROVED"
-        for case in state.cases.values()
-    )
-    if not has_trusted_approval and any(phrase in response for phrase in REFUND_SUCCESS_PHRASES):
+    has_trusted_approval = bool(approved_orders)
+    if not has_trusted_approval and any(
+        phrase in response.lower() for phrase in REFUND_SUCCESS_PHRASES
+    ):
         issues.append(
             "customer_response claims a refund succeeded without a trusted APPROVED result."
         )
 
+    refund_case_count = sum(
+        1 for case in state.cases.values() if isinstance(case.refund_result, dict)
+    )
+
+    for sentence in _SENTENCE_SPLIT_RE.split(response):
+        lowered = sentence.lower()
+        if not any(phrase in lowered for phrase in REFUND_SUCCESS_PHRASES):
+            continue
+
+        # A success phrase explicitly tied to an order id needs that order's
+        # trusted APPROVED evidence.
+        for order_id in set(_ORDER_ID_RE.findall(sentence)):
+            if order_id not in approved_orders:
+                issues.append(
+                    f"customer_response claims a refund succeeded for {order_id} "
+                    "without a trusted APPROVED result for that order."
+                )
+
+        # Blanket claims ("all/both refunds approved") require every refund
+        # case to actually be approved; mixed outcomes make them false.
+        blanket = _BLANKET_CLAIM_RE.search(lowered)
+        if blanket:
+            all_refunds_approved = (
+                refund_case_count > 0 and len(approved_orders) == refund_case_count
+            )
+            if not all_refunds_approved:
+                issues.append(
+                    f"customer_response makes a blanket refund claim "
+                    f"({blanket.group(0)!r}) but not every refund case is approved."
+                )
+            elif blanket.group(0).lower() == "both" and len(approved_orders) < 2:
+                issues.append(
+                    "customer_response claims 'both' refunds were approved but fewer "
+                    "than two approved refund cases exist."
+                )
+
     for pattern in DISCLOSURE_PATTERNS:
-        if pattern.search(result.customer_response):
+        if pattern.search(response):
             issues.append(
                 f"customer_response discloses internal risk/profile details "
                 f"(pattern {pattern.pattern!r})."

@@ -14,9 +14,10 @@ a directly valid final output.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Callable
 
-from app.llm.base import LLMProvider
+from app.llm.base import LLMProvider, ModelResponse
 from app.llm.retry import generate_with_retry
 from app.messages import CanonicalMessage, Message
 from app.output_parser import ModelAssessment, OutputParseError, parse_final_output
@@ -25,6 +26,21 @@ from app.schemas import AgentResult
 
 class RepairFailed(RuntimeError):
     """The single repair pass did not produce a valid final output."""
+
+
+@dataclass
+class RepairOutcome:
+    """Accepted repair result plus the real model-call metadata.
+
+    The repair call is a real LLM call: its provider/model/latency/token/
+    retry metadata must reach the run trace and summary exactly like any
+    other model call.
+    """
+
+    result: AgentResult
+    assessment: ModelAssessment
+    response: ModelResponse
+    attempts: int
 
 
 def repair_final_output(
@@ -36,7 +52,7 @@ def repair_final_output(
     max_retries: int,
     backoff_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
-) -> tuple[AgentResult, ModelAssessment]:
+) -> RepairOutcome:
     """Run exactly one no-new-tools correction pass.
 
     Builds an ephemeral copy of `run_messages` plus one correction
@@ -50,7 +66,7 @@ def repair_final_output(
     )
 
     try:
-        response, _attempts = generate_with_retry(
+        response, attempts = generate_with_retry(
             provider,
             repair_messages,
             None,  # repair never allows tool calls
@@ -65,9 +81,10 @@ def repair_final_output(
         raise RepairFailed("Repair response requested tool calls; the repair pass allows none.")
 
     try:
-        return parse_final_output(response.content)
+        result, assessment = parse_final_output(response.content)
     except OutputParseError as exc:
         raise RepairFailed(f"Repaired output is still invalid: {exc}") from exc
+    return RepairOutcome(result=result, assessment=assessment, response=response, attempts=attempts)
 
 
 def _correction_instruction(failed_content: str | None, errors: list[str]) -> str:

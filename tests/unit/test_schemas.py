@@ -115,3 +115,15 @@ def test_non_completed_outputs_stay_valid(status):
     )
     assert result.status is status
     assert len(result.reasoning_chain) == 1
+
+
+def test_unexpected_extra_fields_are_forbidden():
+    """Fix 9: the frozen external contract rejects arbitrary extra fields."""
+    with pytest.raises(ValidationError):
+        AgentResult(**_kwargs(confidence=0.9))
+    with pytest.raises(ValidationError):
+        AgentResult(**_kwargs(recommendation="approve"))
+    with pytest.raises(ValidationError):
+        ActionTaken(tools_called=[], cases=[], extra_field="x")
+    with pytest.raises(ValidationError):
+        CaseResult(order_id="ORD-1001", decision=Decision.REJECTED, confidence=0.5)
