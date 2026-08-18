@@ -262,77 +262,73 @@ def _validate_case(
     return issues
 
 
-def _approved_orders(state: AgentState) -> set[str]:
+def _approved_reported_orders(result: AgentResult, state: AgentState) -> set[str]:
+    """Reported orders whose cumulative trusted evidence contains APPROVED."""
     return {
-        order_id
-        for order_id, case in state.cases.items()
-        if isinstance(case.refund_result, dict) and case.refund_result.get("status") == "APPROVED"
+        case_result.order_id
+        for case_result in result.action_taken.cases
+        if (
+            (case := state.cases.get(case_result.order_id)) is not None
+            and isinstance(case.refund_result, dict)
+            and case.refund_result.get("status") == "APPROVED"
+        )
     }
 
 
 def _validate_customer_response(result: AgentResult, state: AgentState) -> list[str]:
     issues: list[str] = []
     response = result.customer_response
-    approved_orders = _approved_orders(state)
+    lowered_response = response.lower()
+    approved_orders = _approved_reported_orders(result, state)
 
-    has_trusted_approval = bool(approved_orders)
-    if not has_trusted_approval and any(
-        phrase in response.lower() for phrase in REFUND_SUCCESS_PHRASES
+    # Generic refund-success wording must be grounded in a case represented by
+    # this AgentResult. An approval from an unrelated earlier turn cannot make
+    # a false current-turn claim valid. If a prior order is intentionally
+    # reported again, its cumulative trusted evidence remains usable here.
+    if not approved_orders and any(
+        phrase in lowered_response for phrase in REFUND_SUCCESS_PHRASES
     ):
         issues.append(
-            "customer_response claims a refund succeeded without a trusted APPROVED result."
+            "customer_response claims a refund succeeded without a trusted APPROVED "
+            "result for any case reported in the current AgentResult."
         )
-
-    # Blanket claims are judged against the cases reported in this turn: any
-    # relevant reported case with a non-approved business outcome makes them
-    # false, including policy-level rejections where process_refund never ran.
-    refund_relevant_count = 0
-    approved_reported_count = 0
-    for case_result in result.action_taken.cases:
-        case = state.cases.get(case_result.order_id)
-        if case is None:
-            continue
-        refund = case.refund_result
-        if isinstance(refund, dict):
-            refund_relevant_count += 1
-            if refund.get("status") == "APPROVED":
-                approved_reported_count += 1
-        elif isinstance(case.policy_result, dict) and case.policy_result.get("eligible") is False:
-            refund_relevant_count += 1
 
     for sentence in _SENTENCE_SPLIT_RE.split(response):
         lowered = sentence.lower()
         if not any(phrase in lowered for phrase in REFUND_SUCCESS_PHRASES):
             continue
 
-        # A success phrase explicitly tied to an order id needs that order's
-        # trusted APPROVED evidence.
+        # A success phrase explicitly tied to an order id needs that same
+        # reported order to have trusted APPROVED evidence.
         for order_id in set(_ORDER_ID_RE.findall(sentence)):
             if order_id not in approved_orders:
                 issues.append(
                     f"customer_response claims a refund succeeded for {order_id} "
-                    "without a trusted APPROVED result for that order."
+                    "without a trusted APPROVED result for that reported order."
                 )
 
-        # Blanket claims ("all/both refunds approved") require every relevant
-        # reported refund case to actually be approved; mixed outcomes make
-        # them false.
+        # Blanket success applies to all cases represented in the current
+        # AgentResult, not only cases where process_refund happened to run.
+        # Any rejection, human escalation, or NO_ACTION makes the blanket
+        # statement false. APPROVED decisions must also have trusted evidence.
         blanket = _BLANKET_CLAIM_RE.search(lowered)
         if blanket:
-            all_refunds_approved = (
-                refund_relevant_count > 0
-                and approved_reported_count == refund_relevant_count
+            reported_cases = result.action_taken.cases
+            all_reported_approved = bool(reported_cases) and all(
+                case_result.decision is Decision.AUTO_REFUND_APPROVED
+                and case_result.order_id in approved_orders
+                for case_result in reported_cases
             )
-            if not all_refunds_approved:
+            if not all_reported_approved:
                 issues.append(
                     f"customer_response makes a blanket refund claim "
-                    f"({blanket.group(0)!r}) but not every relevant case reported "
-                    "in this turn has an approved refund outcome."
+                    f"({blanket.group(0)!r}) but not every case reported in this turn "
+                    "has a trusted approved refund outcome."
                 )
-            elif blanket.group(0).lower() == "both" and approved_reported_count < 2:
+            elif blanket.group(0).lower() == "both" and len(reported_cases) < 2:
                 issues.append(
                     "customer_response claims 'both' refunds were approved but fewer "
-                    "than two approved refund cases are reported in this turn."
+                    "than two cases are reported in this turn."
                 )
 
     for pattern in DISCLOSURE_PATTERNS:
