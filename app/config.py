@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 DEFAULT_STARTER_KIT_PATH = ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit"
+ReasoningEffort = Literal["none", "default", "low", "medium", "high"]
 
 #: Environment variable names consumed by this project (also used by tests).
 ENV_VAR_NAMES = (
@@ -23,6 +25,7 @@ ENV_VAR_NAMES = (
     "LLM_MAX_RETRIES",
     "LLM_RETRY_BACKOFF_SECONDS",
     "LLM_TEMPERATURE",
+    "LLM_REASONING_EFFORT",
     "AGENT_MAX_STEPS",
     "QUEST4_STARTER_KIT_PATH",
     "LLM_INPUT_COST_PER_MILLION",
@@ -44,6 +47,9 @@ class Settings(BaseModel):
     #: Short bounded backoff base between transient-failure retries.
     llm_retry_backoff_seconds: float = Field(default=0.25, ge=0)
     llm_temperature: float = Field(default=0.0, ge=0)
+    #: Optional provider reasoning control. Candidate eval config sets this
+    #: explicitly for GPT-OSS; leaving it unset preserves provider defaults.
+    llm_reasoning_effort: ReasoningEffort | None = None
 
     # Safety ceiling for the agent loop. Provisional default; calibrate from
     # Milestone 3 eval traces rather than trusting this guess (AGENTS.md).
