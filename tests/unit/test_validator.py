@@ -605,3 +605,108 @@ def test_current_turn_resolved_case_cannot_be_silently_omitted():
     assert not any("ORD-1001" in issue for issue in issues), (
         "prior-turn cases must not be re-demanded by the current turn"
     )
+
+
+# ----------------------------------------------------------------------
+# Unsupported operational timeline claims (live smoke-test gap)
+# ----------------------------------------------------------------------
+
+
+def test_unsupported_timeline_phrase_a_is_rejected():
+    state = _approved_state()
+    response = (
+        "It should appear on your original payment method within a few business days."
+    )
+    result = _result([_approved_case_result()], response=response)
+    issues = validate_result(result, state)
+    assert any("UNSUPPORTED_TIMELINE_CLAIM" in issue for issue in issues), issues
+
+
+def test_unsupported_timeline_phrase_b_is_rejected():
+    state = _approved_state()
+    response = (
+        "The refund should appear in your account within 3-5 business days."
+    )
+    result = _result([_approved_case_result()], response=response)
+    issues = validate_result(result, state)
+    assert any("UNSUPPORTED_TIMELINE_CLAIM" in issue for issue in issues), issues
+
+
+def test_grounded_refund_without_invented_timeline_remains_valid():
+    state = _approved_state()
+    response = "Your refund of $35.00 (ID: RF-1001-3500) has been approved."
+    result = _result([_approved_case_result()], response=response)
+    assert validate_result(result, state) == []
+
+
+def test_existing_validator_checks_unchanged_after_timeline_fix():
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(order_id="ORD-1001")
+    result = _result(
+        [CaseResult(order_id="ORD-1001", decision=Decision.NO_ACTION)],
+        response="Your refund was approved.",
+    )
+    issues = validate_result(result, state)
+    assert any("without a trusted APPROVED" in issue for issue in issues), issues
+
+
+def _two_approved_cases_with_one_timeline_evidence():
+    """ORD-1001 has trusted timeline-like evidence; ORD-1002 does not."""
+    state = AgentState()
+    state.cases["ORD-1001"] = CaseState(
+        order_id="ORD-1001",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={
+            "status": "APPROVED",
+            "approved_amount": 35.0,
+            "refund_id": "RF-1001-3500",
+            "settlement_estimate": "within 3-5 business days",
+        },
+    )
+    state.cases["ORD-1002"] = CaseState(
+        order_id="ORD-1002",
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={
+            "status": "APPROVED",
+            "approved_amount": 48.0,
+            "refund_id": "RF-1002-4800",
+        },
+    )
+    cases = [
+        CaseResult(
+            order_id="ORD-1001",
+            decision=Decision.AUTO_REFUND_APPROVED,
+            refund_amount=35.0,
+            refund_id="RF-1001-3500",
+        ),
+        CaseResult(
+            order_id="ORD-1002",
+            decision=Decision.AUTO_REFUND_APPROVED,
+            refund_amount=48.0,
+            refund_id="RF-1002-4800",
+        ),
+    ]
+    return state, cases
+
+
+def test_timeline_claim_for_case_without_evidence_rejected_despite_other_case():
+    """Cross-case isolation: trusted timeline-like evidence on ORD-1001 must
+    not authorize an operational timeline claim about ORD-1002."""
+    state, cases = _two_approved_cases_with_one_timeline_evidence()
+    response = (
+        "The refund for ORD-1002 should appear in your account "
+        "within 3-5 business days."
+    )
+    result = _result(cases, response=response)
+    issues = validate_result(result, state)
+    assert any("UNSUPPORTED_TIMELINE_CLAIM" in issue for issue in issues), issues
+
+
+def test_generic_timeline_claim_rejected_when_any_reported_case_lacks_evidence():
+    """Generic timeline over multiple cases requires independent support from
+    every reported case; evidence on ORD-1001 alone must not cover ORD-1002."""
+    state, cases = _two_approved_cases_with_one_timeline_evidence()
+    response = "Your refunds should appear within 3-5 business days."
+    result = _result(cases, response=response)
+    issues = validate_result(result, state)
+    assert any("UNSUPPORTED_TIMELINE_CLAIM" in issue for issue in issues), issues

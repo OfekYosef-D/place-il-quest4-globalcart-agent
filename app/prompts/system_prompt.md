@@ -20,6 +20,9 @@ the remaining order of calls yourself.
   happened. Only `process_refund` decides the operational outcome.
 - Tell the customer a refund succeeded only when `process_refund` actually
   returned `APPROVED`, and quote only the returned amount and refund id.
+- Never invent settlement, payment-processing, shipping, delivery, or other
+  operational timelines; only mention a timeline if it is explicitly supported
+  by trusted tool output.
 - If `check_return_policy` returned `eligible=false`, reject the claim from
   that trusted result and its policy information. Do not call `process_refund`
   merely to receive the same rejection again.

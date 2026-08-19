@@ -9,6 +9,7 @@ it may only relax completeness for genuinely unresolved cases.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.schemas import AgentResult, Decision
 from app.state import AgentState, CaseState, ToolInteractionOutcome
@@ -53,6 +54,28 @@ _SENTENCE_SPLIT_RE = re.compile(r"[.!?;\n]+")
 
 #: Blanket multi-case claim words ("all/both/every refunds were approved").
 _BLANKET_CLAIM_RE = re.compile(r"\b(all|both|every)\b", re.IGNORECASE)
+
+#: Operational timeline indicators (refund settlement / payment / shipping /
+#: delivery). A timeline claim is only allowed when the same phrase exists in
+#: trusted tool output.
+_TIMELINE_CONTEXT_TERMS = (
+    "refund",
+    "payment",
+    "account",
+    "method",
+    "shipping",
+    "delivery",
+    "settlement",
+    "arrive",
+    "appear",
+)
+
+#: Phrases that assert a specific operational timeline.
+#: Catches "within 3-5 business days", "within a few business days", etc.
+_TIMELINE_RE = re.compile(
+    r"\b(within|in)\b[^.!?;\n]*?\b(?:\d+(?:[-–]\d+)?\s+|a\s+few\s+)?(?:business\s+)?(?:days?|hours?|weeks?)\b",
+    re.IGNORECASE,
+)
 
 #: Interaction outcomes that count as a tool actually executed or cache-served.
 #: A business-error result is still a real execution (the supplied tool ran
@@ -137,6 +160,45 @@ def _case_is_resolved(case: CaseState) -> bool:
         return True
     policy = case.policy_result
     return isinstance(policy, dict) and policy.get("eligible") is False
+
+
+def _string_values(obj: Any) -> list[str]:
+    """Recursively collect all string leaf values from a JSON-like object."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [s for value in obj.values() for s in _string_values(value)]
+    if isinstance(obj, list):
+        return [s for item in obj for s in _string_values(item)]
+    return []
+
+
+def _case_evidence_text(state: AgentState, order_id: str) -> str:
+    """Lowercased concatenation of trusted string evidence for one case only.
+
+    Includes the stored case payloads plus the results of order-scoped tool
+    interactions whose arguments target this order id. Evidence from other
+    cases or from generic interactions is deliberately out of scope.
+    """
+    parts: list[str] = []
+    case = state.cases.get(order_id)
+    if case is not None:
+        for payload in (
+            case.verified_order,
+            case.verified_user,
+            case.policy_result,
+            case.refund_result,
+        ):
+            if isinstance(payload, dict):
+                parts.extend(_string_values(payload))
+    for interaction in state.tool_history:
+        if (
+            interaction.outcome in _EXECUTED_OUTCOMES
+            and isinstance(interaction.result, dict)
+            and interaction.arguments.get("order_id") == order_id
+        ):
+            parts.extend(_string_values(interaction.result))
+    return " ".join(parts).lower()
 
 
 def _validate_tools_called(
@@ -336,6 +398,43 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
             issues.append(
                 f"customer_response discloses internal risk/profile details "
                 f"(pattern {pattern.pattern!r})."
+            )
+
+    # Operational timelines (refund settlement, payment processing, shipping,
+    # delivery) must be grounded in trusted tool output for the relevant
+    # reported case(s). The supplied tools never provide these timelines, so
+    # unsupported claims are rejected with UNSUPPORTED_TIMELINE_CLAIM.
+    reported_order_ids = {case.order_id for case in result.action_taken.cases}
+    for sentence in _SENTENCE_SPLIT_RE.split(response):
+        timeline_match = _TIMELINE_RE.search(sentence)
+        if not timeline_match:
+            continue
+        lowered_sentence = sentence.lower()
+        if not any(term in lowered_sentence for term in _TIMELINE_CONTEXT_TERMS):
+            continue
+        phrase = timeline_match.group(0).strip().lower()
+
+        sentence_order_ids = [
+            order_id
+            for order_id in set(_ORDER_ID_RE.findall(sentence))
+            if order_id in reported_order_ids
+        ]
+        if sentence_order_ids:
+            # Explicitly referenced cases must each independently support the
+            # timeline phrase.
+            scope_order_ids = sentence_order_ids
+        else:
+            # Generic timeline not tied to a specific reported case: every
+            # case reported in the current AgentResult must support it.
+            scope_order_ids = sorted(reported_order_ids)
+
+        if not scope_order_ids or any(
+            phrase not in _case_evidence_text(state, order_id)
+            for order_id in scope_order_ids
+        ):
+            issues.append(
+                "customer_response invents an unsupported operational timeline "
+                f"({phrase!r}; issue: UNSUPPORTED_TIMELINE_CLAIM)."
             )
 
     return issues
