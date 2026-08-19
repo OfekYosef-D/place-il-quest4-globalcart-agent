@@ -1,16 +1,20 @@
 """Unit coverage for Milestone 3 eval scoring/reporting without network calls."""
 
+import pytest
+
 from app.agent import AgentRun
+from app.evals.models import CandidateModel
 from app.evals.reporting import build_report, summarize_candidate
 from app.evals.scenarios import AGENT_SCENARIOS, TOOL_PROBES
 from app.evals.scoring import EvalClassification, score_agent_run, score_tool_probe
 from app.schemas import ActionTaken, AgentResult, CaseResult, Decision, FinalStatus
 from app.state import AgentState, CaseState, ToolInteraction, ToolInteractionOutcome
 from app.tracing import RunSummary
+from run_evals import _validate_candidates
 
 
 def _approved_run(order_id="ORD-1001"):
-    state = AgentState()
+    state = AgentState(step_count=3)
     state.cases[order_id] = CaseState(
         order_id=order_id,
         policy_result={"eligible": True, "verdict": "ELIGIBLE"},
@@ -83,7 +87,19 @@ def test_candidate_summary_release_gate_and_metrics():
     summary = summarize_candidate([clean])
     assert summary.release_gate_passed is True
     assert summary.clean_rate == 1.0
-    assert summary.observed_max_passing_steps == 0
+    assert summary.observed_max_passing_steps == 3
     report = build_report([clean], [], repetitions=1, git_head="abc")
     assert report.git_head == "abc"
     assert report.candidate_summaries[0].candidate_id == "c"
+
+
+def test_candidate_matrix_rejects_duplicate_ids_and_unsupported_providers():
+    with pytest.raises(ValueError, match="Duplicate candidate"):
+        _validate_candidates([
+            CandidateModel(id="same", model="a"),
+            CandidateModel(id="same", model="b"),
+        ])
+    with pytest.raises(ValueError, match="Unsupported eval provider"):
+        _validate_candidates([
+            CandidateModel(id="other", provider="not-groq", model="x"),
+        ])
