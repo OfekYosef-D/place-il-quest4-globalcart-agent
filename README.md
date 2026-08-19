@@ -51,6 +51,26 @@ Important Stage 1 guardrails:
 
 See `docs/GUARDRAILS.md` for the authoritative addendum.
 
+## Human escalation
+
+Human review is an explicit business outcome, not an exception path hidden from the customer. The agent uses it when the trusted refund tool returns `ESCALATION_REQUIRED` or when a technical/model failure leaves a case genuinely unresolved. It does **not** claim that money was refunded before approval. Already-resolved cases remain grounded in their trusted outcome even if another case in the same request needs human review.
+
+## Error handling and edge cases
+
+The supplied business tools return structured business-error data rather than ordinary exceptions. The runtime records that evidence and stops or recovers honestly instead of retrying blindly. Programmer/system exceptions fail closed.
+
+Important cases covered by tests/evals include:
+
+- missing or nonexistent order IDs without hallucinating order facts;
+- missing customer information requiring clarification rather than guessing;
+- invalid tool arguments and business-error payloads;
+- processing/cancelled/non-returnable/out-of-window orders;
+- exact authority-boundary cases on both sides of the threshold;
+- multiple orders with independent outcomes in one run;
+- repeated deterministic calls served from cache and bounded for no progress;
+- malformed model output with exactly one no-new-tools repair attempt;
+- technical failure after partial progress, preserving trusted resolved outcomes.
+
 ## Repository / upstream setup
 
 The Place IL starter kit is intellectual property of Place IL and is **not vendored into this repository**. Bootstrap an authorized read-only local copy:
@@ -110,7 +130,8 @@ Per run it records/checks:
 - stop/fail-safe behavior;
 - refund-precondition and output-guardrail violations;
 - unnecessary blocked/invalid/repeated calls as warnings;
-- latency, tokens, estimated cost, tool-call count, repair usage, and steps.
+- wall-clock duration and model-call latency;
+- tokens, estimated cost, tool-call count, repair usage, and steps.
 
 Classification:
 
