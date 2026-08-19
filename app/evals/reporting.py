@@ -26,6 +26,7 @@ class CandidateSummary(BaseModel):
     pass_rate: float
     clean_rate: float
     average_duration_ms: float
+    average_model_latency_ms: float
     average_total_tokens: float
     average_tool_calls: float
     total_estimated_cost_usd: float | None = None
@@ -47,7 +48,7 @@ class EvalSuiteReport(BaseModel):
 def build_report(records: list[EvalRecord], tool_probes: list[ToolProbeRecord], *, repetitions: int, git_head: str | None) -> EvalSuiteReport:
     candidate_ids = sorted({record.candidate_id for record in records})
     summaries = [summarize_candidate([record for record in records if record.candidate_id == candidate_id]) for candidate_id in candidate_ids]
-    summaries.sort(key=lambda s: (not s.release_gate_passed, -s.clean_rate, s.average_duration_ms, s.total_estimated_cost_usd if s.total_estimated_cost_usd is not None else float("inf")))
+    summaries.sort(key=lambda s: (not s.release_gate_passed, -s.clean_rate, s.average_model_latency_ms, s.total_estimated_cost_usd if s.total_estimated_cost_usd is not None else float("inf")))
     return EvalSuiteReport(generated_at=datetime.now(timezone.utc).isoformat(), git_head=git_head, repetitions=repetitions, agent_runs=records, tool_probes=tool_probes, candidate_summaries=summaries)
 
 
@@ -63,8 +64,9 @@ def summarize_candidate(records: list[EvalRecord]) -> CandidateSummary:
         candidate_id=records[0].candidate_id, model=records[0].model, reasoning_effort=records[0].reasoning_effort,
         total_runs=len(records), clean_passes=clean, passes_with_warning=warnings, critical_failures=critical,
         release_gate_passed=critical == 0, pass_rate=(clean + warnings) / len(records), clean_rate=clean / len(records),
-        average_duration_ms=mean(r.metrics.duration_ms for r in records), average_total_tokens=mean(r.metrics.total_tokens for r in records),
-        average_tool_calls=mean(r.metrics.tool_calls for r in records), total_estimated_cost_usd=sum(costs) if len(costs) == len(records) else None,
+        average_duration_ms=mean(r.metrics.duration_ms for r in records), average_model_latency_ms=mean(r.metrics.model_latency_ms for r in records),
+        average_total_tokens=mean(r.metrics.total_tokens for r in records), average_tool_calls=mean(r.metrics.tool_calls for r in records),
+        total_estimated_cost_usd=sum(costs) if len(costs) == len(records) else None,
         repair_rate=sum(r.metrics.repair_used for r in records) / len(records), max_steps_seen=max(r.metrics.steps for r in records),
         observed_max_passing_steps=max(passing_steps) if passing_steps else None,
     )
@@ -87,12 +89,12 @@ def write_report(report: EvalSuiteReport, output_dir: str | Path) -> tuple[Path,
 
 
 def _write_run_csv(records: list[EvalRecord], path: Path) -> None:
-    fieldnames = ["candidate_id","model","reasoning_effort","scenario_id","upstream_scenario","repetition","classification","issue_codes","steps","llm_calls","tool_calls","total_tokens","duration_ms","estimated_cost_usd","repair_used","cache_hits","blocked_calls","final_status"]
+    fieldnames = ["candidate_id","model","reasoning_effort","scenario_id","upstream_scenario","repetition","classification","issue_codes","steps","llm_calls","tool_calls","total_tokens","duration_ms","model_latency_ms","estimated_cost_usd","repair_used","cache_hits","blocked_calls","final_status"]
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for r in records:
-            writer.writerow({"candidate_id":r.candidate_id,"model":r.model,"reasoning_effort":r.reasoning_effort,"scenario_id":r.scenario_id,"upstream_scenario":r.upstream_scenario,"repetition":r.repetition,"classification":r.classification.value,"issue_codes":";".join(i.code for i in r.issues),"steps":r.metrics.steps,"llm_calls":r.metrics.llm_calls,"tool_calls":r.metrics.tool_calls,"total_tokens":r.metrics.total_tokens,"duration_ms":f"{r.metrics.duration_ms:.3f}","estimated_cost_usd":r.metrics.estimated_cost_usd,"repair_used":r.metrics.repair_used,"cache_hits":r.metrics.cache_hits,"blocked_calls":r.metrics.blocked_calls,"final_status":r.final_status})
+            writer.writerow({"candidate_id":r.candidate_id,"model":r.model,"reasoning_effort":r.reasoning_effort,"scenario_id":r.scenario_id,"upstream_scenario":r.upstream_scenario,"repetition":r.repetition,"classification":r.classification.value,"issue_codes":";".join(i.code for i in r.issues),"steps":r.metrics.steps,"llm_calls":r.metrics.llm_calls,"tool_calls":r.metrics.tool_calls,"total_tokens":r.metrics.total_tokens,"duration_ms":f"{r.metrics.duration_ms:.3f}","model_latency_ms":f"{r.metrics.model_latency_ms:.3f}","estimated_cost_usd":r.metrics.estimated_cost_usd,"repair_used":r.metrics.repair_used,"cache_hits":r.metrics.cache_hits,"blocked_calls":r.metrics.blocked_calls,"final_status":r.final_status})
 
 
 def _write_summary_csv(summaries: list[CandidateSummary], path: Path) -> None:
