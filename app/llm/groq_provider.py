@@ -172,6 +172,7 @@ class GroqProvider:
             raise ValueError("LLM_MODEL is not configured.")
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
+        self._reasoning_effort = settings.llm_reasoning_effort
         self._client = openai.OpenAI(
             api_key=settings.groq_api_key,
             base_url=GROQ_BASE_URL,
@@ -196,6 +197,11 @@ class GroqProvider:
         }
         if tools:
             kwargs["tools"] = to_openai_function_tools(tools)
+        if self._reasoning_effort is not None:
+            # Use OpenAI client's generic pass-through so this remains
+            # compatible with older SDK versions while Groq receives the
+            # documented top-level reasoning_effort request field.
+            kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
 
         start = time.perf_counter()
         try:
