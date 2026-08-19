@@ -18,6 +18,7 @@ from app.tools_adapter import load_toolkit
 
 DEFAULT_CANDIDATES = Path("evals/candidates.json")
 DEFAULT_OUTPUT_DIR = Path("eval-results")
+SUPPORTED_EVAL_PROVIDERS = frozenset({"groq"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base_settings = load_settings()
         candidate_config = load_candidate_config(args.candidates)
+        _validate_candidates(candidate_config.candidates)
         scenarios = _select_scenarios(args.scenario_ids)
     except Exception as exc:
         print(f"Evaluation configuration error: {exc}", file=sys.stderr)
@@ -59,9 +61,6 @@ def main(argv: list[str] | None = None) -> int:
     records: list[EvalRecord] = []
     for candidate in candidate_config.candidates:
         settings = _settings_for_candidate(base_settings, candidate)
-        if candidate.provider.lower() != "groq":
-            print(f"Skipping unsupported eval provider {candidate.provider!r} for {candidate.id}.", file=sys.stderr)
-            continue
         try:
             agent = OperationsResolverAgent(settings, GroqProvider(settings), kit)
         except Exception as exc:
@@ -80,12 +79,30 @@ def main(argv: list[str] | None = None) -> int:
                 records.append(record)
                 print(f"  -> {record.classification.value}", flush=True)
 
+    if not records:
+        print("Evaluation failed closed: no agent-run records were produced.", file=sys.stderr)
+        return 2
+
     probe_records = [] if args.skip_tool_probes else _run_tool_probes(kit)
     report = build_report(records, probe_records, repetitions=args.repetitions, git_head=_git_head())
     paths = write_report(report, args.output_dir)
     _print_summary(report, paths)
     has_critical = any(r.classification is EvalClassification.CRITICAL_FAILURE for r in records) or any(p.classification is EvalClassification.CRITICAL_FAILURE for p in probe_records)
     return 1 if has_critical else 0
+
+
+def _validate_candidates(candidates: list[CandidateModel]) -> None:
+    ids = [candidate.id for candidate in candidates]
+    duplicates = sorted({candidate_id for candidate_id in ids if ids.count(candidate_id) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate candidate id(s): {', '.join(duplicates)}")
+    unsupported = sorted({candidate.provider for candidate in candidates if candidate.provider.lower() not in SUPPORTED_EVAL_PROVIDERS})
+    if unsupported:
+        raise ValueError(
+            "Unsupported eval provider(s): "
+            + ", ".join(unsupported)
+            + ". Stage 1 live evals currently support only Groq."
+        )
 
 
 def _settings_for_candidate(base: Settings, candidate: CandidateModel) -> Settings:
