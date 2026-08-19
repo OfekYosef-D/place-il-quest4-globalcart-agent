@@ -43,6 +43,7 @@ class EvalMetrics(BaseModel):
     tool_calls: int = 0
     total_tokens: int = 0
     duration_ms: float = 0.0
+    model_latency_ms: float = 0.0
     estimated_cost_usd: float | None = None
     repair_used: bool = False
     cache_hits: int = 0
@@ -125,6 +126,7 @@ def score_agent_run(scenario: EvalScenario, run: AgentRun, *, candidate_id: str,
         tool_calls=run.summary.tool_calls,
         total_tokens=run.summary.total_tokens,
         duration_ms=run.summary.total_duration_ms,
+        model_latency_ms=sum(call.latency_ms or 0.0 for call in run.model_calls),
         estimated_cost_usd=run.summary.estimated_cost_usd,
         repair_used=any(call.kind == "repair" for call in run.model_calls),
         cache_hits=sum(i.outcome is ToolInteractionOutcome.CACHED for i in run.tool_interactions),
