@@ -19,6 +19,7 @@ def test_defaults_apply():
     assert settings.llm_provider == "groq"
     assert settings.llm_model is None
     assert settings.groq_api_key is None
+    assert settings.openrouter_api_key is None
     assert settings.llm_timeout_seconds == 30.0
     assert settings.llm_max_retries == 2
     assert settings.llm_temperature == 0.0
@@ -37,7 +38,9 @@ def test_default_starter_kit_path_points_at_vendor_checkout():
 
 
 def test_env_vars_override_defaults(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("LLM_MODEL", "some-model")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "10")
     monkeypatch.setenv("LLM_MAX_RETRIES", "3")
     monkeypatch.setenv("AGENT_MAX_STEPS", "12")
@@ -45,7 +48,9 @@ def test_env_vars_override_defaults(monkeypatch):
     monkeypatch.setenv("LLM_INPUT_COST_PER_MILLION", "0.05")
 
     settings = load_settings(env_file=None)
+    assert settings.llm_provider == "openrouter"
     assert settings.llm_model == "some-model"
+    assert settings.openrouter_api_key == "secret"
     assert settings.llm_timeout_seconds == 10.0
     assert settings.llm_max_retries == 3
     assert settings.agent_max_steps == 12
