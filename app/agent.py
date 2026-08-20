@@ -31,6 +31,7 @@ from app.messages import (
     ToolObservationMessage,
 )
 from app.output_parser import ModelAssessment, OutputParseError, parse_final_output
+from app.outcome_projector import project_result_from_state
 from app.prompts import load_system_prompt
 from app.repair import RepairFailed, repair_final_output
 from app.schemas import ActionTaken, AgentResult, CaseResult, Decision, FinalStatus
@@ -302,7 +303,7 @@ class OperationsResolverAgent:
         model_calls: list[ModelCallRecord],
         turn_start_history: int,
     ) -> tuple[AgentResult | None, ModelAssessment | None, str | None]:
-        """Parse and validate final content; at most one ephemeral repair pass."""
+        """Parse, project trusted outcomes, validate; allow one repair pass."""
         problems: list[str] | None = None
         result: AgentResult | None = None
         assessment: ModelAssessment | None = None
@@ -313,6 +314,9 @@ class OperationsResolverAgent:
             problems = [str(exc)]
 
         if result is not None:
+            # The model owns reasoning/tool selection, but terminal business
+            # outcomes are runtime-owned once trusted tool evidence exists.
+            result = project_result_from_state(result, state, turn_start_history)
             issues = validate_result(result, state, turn_start_history)
             if issues:
                 problems = issues
@@ -347,10 +351,13 @@ class OperationsResolverAgent:
                     retries=repair.attempts - 1,
                 )
             )
-            issues = validate_result(repair.result, state, turn_start_history)
+            repaired_result = project_result_from_state(
+                repair.result, state, turn_start_history
+            )
+            issues = validate_result(repaired_result, state, turn_start_history)
             if issues:
                 return None, None, f"VALIDATION_FAILED_AFTER_REPAIR: {'; '.join(issues)}"
-            result = repair.result
+            result = repaired_result
             assessment = repair.assessment
 
         return result, assessment, None
