@@ -1,4 +1,4 @@
-"""Offline tests for provider selection and schema binding."""
+"""Offline tests for provider selection."""
 
 import pytest
 
@@ -9,18 +9,18 @@ from app.llm.factory import (
     required_api_key_name,
     supported_provider_names,
 )
-from app.llm.schema_bound import SchemaBoundProvider
+from app.llm.groq_provider import GroqProvider
+from app.llm.openrouter_provider import OpenRouterProvider
 
 
 def test_supported_provider_names_are_explicit():
     assert supported_provider_names() == frozenset({"groq", "openrouter"})
 
 
-def test_factory_wraps_selected_provider_with_final_schema_binding():
+def test_factory_builds_selected_provider_without_runtime_branching():
     groq = build_provider(Settings(groq_api_key="g", llm_model="openai/gpt-oss-20b"))
-    assert isinstance(groq, SchemaBoundProvider)
+    assert isinstance(groq, GroqProvider)
     assert groq.supports_response_schema is True
-    assert groq.supports_response_schema_with_tools is False
 
     openrouter = build_provider(
         Settings(
@@ -29,9 +29,8 @@ def test_factory_wraps_selected_provider_with_final_schema_binding():
             llm_model="qwen/qwen3.5-397b-a17b",
         )
     )
-    assert isinstance(openrouter, SchemaBoundProvider)
+    assert isinstance(openrouter, OpenRouterProvider)
     assert openrouter.supports_response_schema is True
-    assert openrouter.supports_response_schema_with_tools is True
 
 
 def test_provider_key_helpers_are_provider_specific():
