@@ -61,7 +61,7 @@ LLM_REASONING_EFFORT=
 
 Never paste the key into Git, screenshots, reports, or candidate config files. `.env` is git-ignored.
 
-The OpenRouter adapter uses the OpenAI-compatible chat API. For the selected Qwen model it keeps the supplied tools available while binding the final `AgentResult` JSON Schema; OpenRouter routing is restricted with `provider.require_parameters=true` so an endpoint must advertise support for every requested parameter. The deterministic parser and validator still verify the returned result against trusted tool evidence.
+The OpenRouter adapter uses the OpenAI-compatible chat API. Normal autonomous calls expose the supplied tools and keep the existing prompt + parser + deterministic-validator final-output path. If a final output is malformed or inconsistent, the single no-new-tools repair call uses native JSON Schema for the selected Qwen model. We intentionally do not combine tool calling and `response_format` in one request until that exact request shape is verified by live evidence. Requests that need tool or schema parameters use OpenRouter's `provider.require_parameters=true` routing constraint so the selected inference endpoint advertises those parameters.
 
 ## 4. Run the two authority-boundary smoke scenarios first
 
