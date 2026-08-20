@@ -1,6 +1,6 @@
 # Milestone 3 Verification and Live-Eval Runbook
 
-This runbook is the remaining empirical part of Milestone 3. The repository contains the eval implementation; these steps must be executed in a local checkout that has the authorized upstream starter kit and Groq credentials.
+This runbook is the remaining empirical part of Milestone 3. The repository contains the runtime/eval implementation; live calls require only a local OpenRouter key.
 
 ## 1. Synchronize safely
 
@@ -28,7 +28,7 @@ Required before live evals:
 
 - full pytest suite green;
 - supplied verifier: 33/33;
-- dry-run lists both configured candidates, all agent scenarios, and Scenario 8 direct tool probes;
+- dry-run lists the configured OpenRouter candidate, all agent scenarios, and Scenario 8 direct tool probes;
 - working tree remains clean.
 
 ## 3. Configure the secret locally
@@ -36,34 +36,60 @@ Required before live evals:
 Create/update `.env` locally (already git-ignored):
 
 ```dotenv
-GROQ_API_KEY=...
+LLM_PROVIDER=openrouter
+LLM_MODEL=qwen/qwen3.5-397b-a17b
+OPENROUTER_API_KEY=...
+LLM_REASONING_EFFORT=
 ```
 
-`run_evals.py` supplies model, reasoning effort, and per-candidate pricing from `evals/candidates.json`. No API key belongs in that file or in Git.
+Never paste the key into Git, logs, screenshots, or eval config files.
 
-## 4. Optional one-scenario smoke test
+## 4. Run the two authority-boundary smoke scenarios first
 
-Start with the happy path before the full matrix:
+These are the cases that exposed the silent partial-refund bug in the earlier model setup. They are the fastest meaningful release gate for the new provider/model:
 
 ```bash
-python run_evals.py --scenario s1_vip_damaged_approved --repetitions 1
+python run_evals.py \
+  --scenario s2_standard_above_cap_escalates \
+  --scenario s5b_boundary_52_escalates \
+  --repetitions 1 \
+  --skip-tool-probes
 ```
 
-Inspect the generated JSON/CSV in `eval-results/`. If the runner itself is misconfigured, fix the harness before spending calls on the full suite.
+Required outcomes:
 
-## 5. Run the comparison matrix
+- `ORD-1002`: `process_refund` requested with `150.0`, trusted result `ESCALATION_REQUIRED`, final decision `HUMAN_ESCALATION`;
+- `ORD-1011`: `process_refund` requested with `52.0`, trusted result `ESCALATION_REQUIRED`, final decision `HUMAN_ESCALATION`;
+- no `REFUND_REQUEST_AMOUNT_MISMATCH` or `REFUND_REQUEST_MISSING`;
+- no false refund-success claim.
+
+If either scenario is a `CRITICAL_FAILURE`, stop. Inspect the generated report before spending more calls.
+
+## 5. Run the full catalog once
+
+Only after the smoke is green:
+
+```bash
+python run_evals.py --repetitions 1
+```
+
+This is nine agent-eval entries plus five deterministic Scenario 8 tool probes. Scenario 5 is split into below/above-boundary cases while Scenario 7 keeps its two independent orders in one multi-order turn.
+
+The process exits non-zero if any critical failure or source-behavior probe failure is observed.
+
+## 6. Measure stability only after correctness
+
+If all nine live scenarios are correct once and time/budget permits:
 
 ```bash
 python run_evals.py --repetitions 3
 ```
 
-The initial matrix is two candidates x nine agent-eval entries x three repetitions, plus five deterministic Scenario 8 tool probes. Scenario 5 is split into below/above-boundary cases while Scenario 7 keeps its two independent orders in one multi-order turn.
+Do not use repetitions to compensate for a systematic correctness failure. Fix the demonstrated issue or change the candidate first.
 
-The process exits non-zero if any critical failure or source-behavior probe failure is observed.
+## 7. Read the evidence
 
-## 6. Read the evidence
-
-Generated artifacts include:
+Generated artifacts in git-ignored `eval-results/` include:
 
 - timestamped JSON report with every run and issue;
 - CSV of per-run correctness/safety/efficiency metrics;
@@ -73,20 +99,21 @@ Generated artifacts include:
 For each candidate review:
 
 - `critical_failures` must be zero for release eligibility;
-- prefer higher clean/stable performance before latency/cost;
-- inspect warning codes instead of optimizing tool count blindly;
+- prefer correctness/stability before latency/cost;
+- inspect warning codes rather than optimizing tool count blindly;
 - inspect `observed_max_passing_steps` before changing `AGENT_MAX_STEPS`;
-- do not tune the step ceiling to a single lucky run.
+- do not tune the step ceiling to one lucky run.
 
-## 7. Finalize Milestone 3 from evidence
+OpenRouter may route the same model through different inference providers, whose prices can differ. The active candidate therefore leaves configured per-million pricing unset until a backend is intentionally pinned; do not present an inaccurate estimated-cost number as measured spend.
 
-Only after the final matrix is green:
+## 8. Finalize Milestone 3 from evidence
 
-1. choose the release candidate based on reliability first, efficiency second;
-2. set the release `LLM_MODEL` recommendation in documentation;
-3. calibrate `AGENT_MAX_STEPS` from observed normal traces with conservative headroom, then rerun the full eval matrix;
-4. record actual eval results in README / model-selection notes;
-5. rerun pytest and the supplied 33 checks after any calibration change;
-6. confirm no secrets, `.vendor` files, or generated `eval-results/` were committed.
+Only after the final live suite is green:
 
-Milestone 3 is complete only after those empirical steps, not merely because the eval harness exists.
+1. record the model/provider and generated report evidence in README / model-selection notes;
+2. calibrate `AGENT_MAX_STEPS` only if passing traces justify a change;
+3. rerun pytest and the supplied 33 checks after any calibration change;
+4. confirm no secrets, `.vendor` files, or generated `eval-results/` were committed;
+5. perform the final IP/public-repository check before changing repository visibility.
+
+Milestone 3 is complete from measured evidence, not merely because the harness exists.
