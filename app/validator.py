@@ -447,9 +447,12 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
             )
 
     # Human review is supported by ESCALATION_REQUIRED; a promise that someone
-    # will contact/reach out/follow up is not. No supplied tool commits another
-    # person to a future customer interaction.
-    if any(_UNSUPPORTED_FOLLOWUP_PROMISE_RE.search(sentence) for sentence in sentences):
+    # will contact/reach out/follow up is not part of a normal completed case.
+    # FAILED_SAFE uses a deterministic runtime-owned recovery message and is
+    # kept outside this model-output wording guard.
+    if result.status.value != "FAILED_SAFE" and any(
+        _UNSUPPORTED_FOLLOWUP_PROMISE_RE.search(sentence) for sentence in sentences
+    ):
         issues.append(
             "customer_response invents an unsupported future contact/follow-up commitment "
             "(issue: UNSUPPORTED_FOLLOWUP_PROMISE)."
