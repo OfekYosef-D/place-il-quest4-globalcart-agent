@@ -1,9 +1,8 @@
 """Groq provider over the OpenAI-compatible chat completions API (spec section 6).
 
 Knows only how to call one provider and normalize the result into
-`ModelResponse`, including converting canonical (supplied, Anthropic-shaped)
-tool schemas and canonical conversation messages into this provider's wire
-format. Retry policy belongs to the runtime (Milestone 2).
+`ModelResponse`, including converting canonical tool/message schemas and the
+provider-neutral final-response schema into Groq's wire format.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from app.messages import (
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-#: Known transient failure classes worth retrying (runtime decides the policy).
 _TRANSIENT_ERRORS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
@@ -43,11 +41,7 @@ _TRANSIENT_ERRORS = (
 def to_openai_function_tools(
     schemas: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Convert canonical Anthropic-shaped tool schemas to OpenAI function format.
-
-    The runtime passes the supplied `TOOL_SCHEMAS` unchanged; only this
-    provider layer knows the wire format. Input objects are never mutated.
-    """
+    """Convert canonical Anthropic-shaped tool schemas to OpenAI function format."""
     return [
         {
             "type": "function",
@@ -61,12 +55,39 @@ def to_openai_function_tools(
     ]
 
 
-def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert canonical conversation messages to OpenAI-compatible wire dicts.
+def to_groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Convert provider-neutral JSON Schema to Groq strict-mode requirements.
 
-    Only this provider layer knows the wire shape; canonical inputs are never
-    mutated. `tool_call_id` correlation is preserved for tool exchanges.
+    Groq strict Structured Outputs require every object property to be listed
+    in `required` and every object to be closed with `additionalProperties:
+    false`. Pydantic represents optional fields as nullable schemas that may be
+    omitted, so at the provider boundary we require those nullable fields to be
+    present (possibly as null) without changing the runtime/Pydantic contract.
+    Unsupported/default annotations are removed from the wire schema.
     """
+
+    def normalize(node: Any) -> Any:
+        if isinstance(node, list):
+            return [normalize(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        normalized = {
+            key: normalize(value)
+            for key, value in node.items()
+            if key != "default"
+        }
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["additionalProperties"] = False
+            normalized["required"] = list(properties.keys())
+        return normalized
+
+    return normalize(copy.deepcopy(schema))
+
+
+def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
+    """Convert canonical conversation messages to OpenAI-compatible wire dicts."""
     wire: list[dict[str, Any]] = []
     for message in messages:
         if isinstance(message, CanonicalMessage):
@@ -184,9 +205,8 @@ class GroqProvider:
     ) -> ModelResponse:
         """Call Groq using provider-owned wire-format translation.
 
-        Structured JSON Schema output is intentionally restricted to no-tools
-        calls. The runtime can therefore use native structured output for a
-        finalization/repair pass without changing normal model-driven tool use.
+        Groq documents Structured Outputs as incompatible with tool use, so a
+        response schema is accepted only on a no-tools finalization/repair call.
         """
         if response_schema is not None and tools:
             raise ValueError("response_schema requires tools=None")
@@ -204,7 +224,7 @@ class GroqProvider:
                 "json_schema": {
                     "name": "globalcart_agent_result",
                     "strict": True,
-                    "schema": copy.deepcopy(response_schema),
+                    "schema": to_groq_strict_schema(response_schema),
                 },
             }
         if self._reasoning_effort is not None:
