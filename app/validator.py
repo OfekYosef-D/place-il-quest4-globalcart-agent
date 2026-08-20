@@ -92,6 +92,25 @@ _OPERATIONAL_TIMELINE_PREDICATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: The supplied tools can require human review, but they never promise that a
+#: representative will contact/reach out/follow up with the customer. Keep
+#: review status distinct from an invented future service commitment.
+_UNSUPPORTED_FOLLOWUP_PROMISE_RE = re.compile(
+    r"\b(?:will|shall|going\s+to)\b[^.!?;\n]{0,80}\b(?:contact|reach\s+out|follow\s+up)\b",
+    re.IGNORECASE,
+)
+
+#: If no reported case has a trusted APPROVED refund, the response may not
+#: promise that a refund will later be completed/processed/issued/credited.
+#: Escalation means review is required, not that eventual payout is certain.
+_UNAPPROVED_FUTURE_REFUND_RE = re.compile(
+    r"\b(?:will|shall|going\s+to|expected\s+to)\b[^.!?;\n]{0,100}\b"
+    r"(?:complete|process|issue|credit|settle)\w*\b[^.!?;\n]{0,80}\brefund\b"
+    r"|\brefund\b[^.!?;\n]{0,80}\b(?:will|shall|going\s+to|expected\s+to)\b"
+    r"[^.!?;\n]{0,80}\b(?:complete|process|issue|credit|settle)\w*\b",
+    re.IGNORECASE,
+)
+
 #: Interaction outcomes that count as a tool actually executed or cache-served.
 #: A business-error result is still a real execution (the supplied tool ran
 #: and returned error data); blocked/invalid/unknown/system-failure requests
@@ -426,6 +445,26 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
                 f"customer_response discloses internal risk/profile details "
                 f"(pattern {pattern.pattern!r})."
             )
+
+    # Human review is supported by ESCALATION_REQUIRED; a promise that someone
+    # will contact/reach out/follow up is not. No supplied tool commits another
+    # person to a future customer interaction.
+    if any(_UNSUPPORTED_FOLLOWUP_PROMISE_RE.search(sentence) for sentence in sentences):
+        issues.append(
+            "customer_response invents an unsupported future contact/follow-up commitment "
+            "(issue: UNSUPPORTED_FOLLOWUP_PROMISE)."
+        )
+
+    # Likewise, escalation must not be phrased as a guarantee that the refund
+    # will eventually be completed. Only trusted APPROVED evidence authorizes
+    # a successful refund claim.
+    if not approved_orders and any(
+        _UNAPPROVED_FUTURE_REFUND_RE.search(sentence) for sentence in sentences
+    ):
+        issues.append(
+            "customer_response promises future refund completion without a trusted "
+            "APPROVED result (issue: UNAPPROVED_FUTURE_REFUND_PROMISE)."
+        )
 
     # Operational timelines (refund settlement, payment processing, shipping,
     # delivery) must be grounded in trusted tool output for the relevant
