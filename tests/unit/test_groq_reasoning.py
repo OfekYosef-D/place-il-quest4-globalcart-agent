@@ -60,8 +60,19 @@ def test_groq_strict_schema_requires_all_properties_and_removes_defaults():
     assert source["required"] == ["name"], "provider conversion must not mutate input"
 
 
-def test_response_schema_uses_native_json_schema_mode_on_no_tools_call():
-    provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="some-model"))
+def test_documented_strict_models_advertise_response_schema_support():
+    supported = GroqProvider(
+        Settings(groq_api_key="test-key", llm_model="openai/gpt-oss-20b")
+    )
+    unsupported = GroqProvider(
+        Settings(groq_api_key="test-key", llm_model="some-model")
+    )
+    assert supported.supports_response_schema is True
+    assert unsupported.supports_response_schema is False
+
+
+def test_response_schema_uses_native_json_schema_mode_on_supported_no_tools_call():
+    provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="openai/gpt-oss-20b"))
     fake = _FakeClient()
     provider._client = fake
     schema = {
@@ -92,7 +103,7 @@ def test_response_schema_uses_native_json_schema_mode_on_no_tools_call():
 
 
 def test_response_schema_is_not_combined_with_tool_calling():
-    provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="some-model"))
+    provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="openai/gpt-oss-20b"))
     with pytest.raises(ValueError, match="requires tools=None"):
         provider.generate(
             [CanonicalMessage(role="user", content="hello")],
@@ -104,4 +115,13 @@ def test_response_schema_is_not_combined_with_tool_calling():
                 }
             ],
             response_schema={"type": "object"},
+        )
+
+
+def test_response_schema_fails_fast_for_unsupported_groq_model():
+    provider = GroqProvider(Settings(groq_api_key="test-key", llm_model="some-model"))
+    with pytest.raises(ValueError, match="does not support"):
+        provider.generate(
+            [CanonicalMessage(role="user", content="finalize")],
+            response_schema={"type": "object", "properties": {}},
         )
