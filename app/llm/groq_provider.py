@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import time
 from typing import Any
 
@@ -11,8 +10,10 @@ import openai
 from app.config import Settings
 from app.llm.base import ModelResponse, TransientLLMFailure
 from app.llm.openai_compat import (
+    json_schema_response_format,
     normalize_response,
     to_openai_function_tools,
+    to_strict_json_schema,
     to_wire_messages,
 )
 from app.messages import Message
@@ -27,39 +28,21 @@ _TRANSIENT_ERRORS = (
 )
 
 # Groq's current strict Structured Outputs documentation lists these model IDs.
-# Keep capabilities explicit rather than assuming every hosted model supports it.
 _GROQ_STRICT_SCHEMA_MODELS = frozenset(
     {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
 )
 
 
 def to_groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Convert provider-neutral JSON Schema to Groq strict-mode requirements."""
-
-    def normalize(node: Any) -> Any:
-        if isinstance(node, list):
-            return [normalize(item) for item in node]
-        if not isinstance(node, dict):
-            return node
-
-        normalized = {
-            key: normalize(value)
-            for key, value in node.items()
-            if key != "default"
-        }
-        properties = normalized.get("properties")
-        if isinstance(properties, dict):
-            normalized["additionalProperties"] = False
-            normalized["required"] = list(properties.keys())
-        return normalized
-
-    return normalize(copy.deepcopy(schema))
+    """Backward-compatible alias for existing Groq strict-schema tests."""
+    return to_strict_json_schema(schema)
 
 
 class GroqProvider:
     """Thin Groq client preserving the provider-neutral runtime contract."""
 
     supports_response_schema: bool
+    supports_response_schema_with_tools = False
 
     def __init__(self, settings: Settings) -> None:
         if not settings.groq_api_key:
@@ -89,7 +72,7 @@ class GroqProvider:
         schema-constrained call is accepted only when no tools are exposed.
         """
         if response_schema is not None and tools:
-            raise ValueError("response_schema requires tools=None")
+            raise ValueError("Groq response_schema requires tools=None")
         if response_schema is not None and not self.supports_response_schema:
             raise ValueError(
                 f"Groq model {self._model!r} does not support configured strict response schemas"
@@ -103,14 +86,7 @@ class GroqProvider:
         if tools:
             kwargs["tools"] = to_openai_function_tools(tools)
         if response_schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "globalcart_agent_result",
-                    "strict": True,
-                    "schema": to_groq_strict_schema(response_schema),
-                },
-            }
+            kwargs["response_format"] = json_schema_response_format(response_schema)
         if self._reasoning_effort is not None:
             kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
 
