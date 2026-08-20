@@ -117,11 +117,7 @@ def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
 def normalize_response(
     raw: Any, *, provider: str, fallback_model: str, latency_ms: float
 ) -> ModelResponse:
-    """Convert a raw chat-completion object into the normalized contract.
-
-    Accepts any object with the OpenAI completion shape, so it can be unit
-    tested without network access.
-    """
+    """Convert a raw chat-completion object into the normalized contract."""
     message = raw.choices[0].message
 
     tool_calls: list[ToolCallRequest] = []
@@ -157,13 +153,13 @@ def normalize_response(
         latency_ms=latency_ms,
         raw_usage=raw_usage,
     )
-    # Provider boundary: every requested tool call leaves with a stable,
-    # non-empty, unique id so observations can always be correlated.
     return ensure_unique_tool_call_ids(response)
 
 
 class GroqProvider:
     """Thin OpenAI-compatible client pointed at Groq."""
+
+    supports_response_schema = True
 
     def __init__(self, settings: Settings) -> None:
         if not settings.groq_api_key:
@@ -183,13 +179,18 @@ class GroqProvider:
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> ModelResponse:
-        """Call the provider with canonical messages and canonical tool schemas.
+        """Call Groq using provider-owned wire-format translation.
 
-        `messages` are canonical conversation records and `tools` are the
-        supplied Anthropic-shaped schemas; conversion to the OpenAI wire
-        formats happens here, never in the runtime.
+        Structured JSON Schema output is intentionally restricted to no-tools
+        calls. The runtime can therefore use native structured output for a
+        finalization/repair pass without changing normal model-driven tool use.
         """
+        if response_schema is not None and tools:
+            raise ValueError("response_schema requires tools=None")
+
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": to_wire_messages(messages),
@@ -197,10 +198,16 @@ class GroqProvider:
         }
         if tools:
             kwargs["tools"] = to_openai_function_tools(tools)
+        if response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "globalcart_agent_result",
+                    "strict": True,
+                    "schema": copy.deepcopy(response_schema),
+                },
+            }
         if self._reasoning_effort is not None:
-            # Use OpenAI client's generic pass-through so this remains
-            # compatible with older SDK versions while Groq receives the
-            # documented top-level reasoning_effort request field.
             kwargs["extra_body"] = {"reasoning_effort": self._reasoning_effort}
 
         start = time.perf_counter()
