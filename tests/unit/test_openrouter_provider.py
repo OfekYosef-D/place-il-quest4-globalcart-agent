@@ -58,8 +58,11 @@ def test_openrouter_requires_api_key_and_model():
         OpenRouterProvider(Settings(llm_provider="openrouter", openrouter_api_key="key"))
 
 
-def test_openrouter_satisfies_provider_protocol():
-    assert isinstance(_provider(), LLMProvider)
+def test_openrouter_satisfies_provider_protocol_and_capabilities():
+    provider = _provider()
+    assert isinstance(provider, LLMProvider)
+    assert provider.supports_response_schema is True
+    assert provider.supports_response_schema_with_tools is True
 
 
 def test_tool_call_request_uses_openai_shape_and_requires_parameter_support():
@@ -77,13 +80,15 @@ def test_tool_call_request_uses_openai_shape_and_requires_parameter_support():
     assert "response_format" not in kwargs
 
 
-def test_structured_no_tools_request_uses_native_json_schema():
+def test_structured_no_tools_request_uses_strict_native_json_schema():
     provider = _provider()
     schema = {
         "type": "object",
-        "properties": {"status": {"type": "string"}},
+        "properties": {
+            "status": {"type": "string"},
+            "note": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+        },
         "required": ["status"],
-        "additionalProperties": False,
     }
     provider.generate(
         [CanonicalMessage(role="user", content="finalize")],
@@ -93,22 +98,31 @@ def test_structured_no_tools_request_uses_native_json_schema():
 
     kwargs = provider._client.chat.completions.kwargs
     assert "tools" not in kwargs
-    assert kwargs["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "globalcart_agent_result",
-            "strict": True,
-            "schema": schema,
-        },
-    }
+    strict_schema = kwargs["response_format"]["json_schema"]["schema"]
+    assert kwargs["response_format"]["type"] == "json_schema"
+    assert kwargs["response_format"]["json_schema"]["strict"] is True
+    assert strict_schema["required"] == ["status", "note"]
+    assert strict_schema["additionalProperties"] is False
+    assert "default" not in strict_schema["properties"]["note"]
     assert kwargs["extra_body"] == {"provider": {"require_parameters": True}}
 
 
-def test_schema_and_tools_are_not_mixed():
+def test_structured_tool_call_request_sends_tools_and_response_schema_together():
     provider = _provider()
-    with pytest.raises(ValueError, match="tools=None"):
-        provider.generate(
-            [CanonicalMessage(role="user", content="hello")],
-            [TOOL_SCHEMA],
-            response_schema={"type": "object"},
-        )
+    schema = {
+        "type": "object",
+        "properties": {"status": {"type": "string"}},
+        "required": ["status"],
+        "additionalProperties": False,
+    }
+    provider.generate(
+        [CanonicalMessage(role="user", content="check then resolve")],
+        [TOOL_SCHEMA],
+        response_schema=schema,
+    )
+
+    kwargs = provider._client.chat.completions.kwargs
+    assert kwargs["tools"][0]["function"]["name"] == "get_order_details"
+    assert kwargs["response_format"]["type"] == "json_schema"
+    assert kwargs["response_format"]["json_schema"]["schema"] == schema
+    assert kwargs["extra_body"] == {"provider": {"require_parameters": True}}
