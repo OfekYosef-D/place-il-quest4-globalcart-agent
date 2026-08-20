@@ -83,16 +83,23 @@ def _fresh_tool_call_id(seen: set[str]) -> str:
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    """Conceptual interface: LLMProvider.generate(messages, tools) -> ModelResponse.
+    """Provider-neutral model interface used by the runtime.
 
     `messages` are canonical conversation records (`app.messages`) and `tools`
     are canonical tool schemas exactly as supplied by the starter kit
-    (Anthropic-shaped, with `input_schema`). The runtime never converts
-    either to a provider wire format; each provider owns that conversion.
+    (Anthropic-shaped, with `input_schema`). `response_schema`, when supplied,
+    is provider-neutral JSON Schema for a no-tools structured response. Each
+    provider owns the translation to its wire format.
     """
+
+    #: True when the provider adapter can request a JSON-Schema-constrained
+    #: response on a call where no tools are exposed.
+    supports_response_schema: bool
 
     def generate(
         self,
         messages: list[Any],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> ModelResponse: ...
