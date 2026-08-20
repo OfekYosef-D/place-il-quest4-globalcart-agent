@@ -26,6 +26,11 @@ class ExpectedCase(BaseModel):
     error_code: str | None = None
     refund_status: Literal["APPROVED", "ESCALATION_REQUIRED", "REJECTED"] | None = None
     refund_must_not_execute: bool = False
+    #: When set, every factual process_refund call for this order must request
+    #: exactly this amount (the customer's requested amount, or the verified
+    #: order total for whole-order requests). Silently reducing it, e.g. to
+    #: the automatic authority cap, is a critical failure.
+    expected_refund_request_amount: float | None = None
 
 
 class EvalScenario(BaseModel):
@@ -65,7 +70,7 @@ AGENT_SCENARIOS: tuple[EvalScenario, ...] = (
         id="s2_standard_above_cap_escalates", upstream_scenario="2",
         title="Legitimate damaged claim above automatic authority",
         message="Order ORD-1002 arrived damaged and leaking. I paid $150 and want a refund.",
-        cases=[ExpectedCase(order_id="ORD-1002", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED")],
+        cases=[ExpectedCase(order_id="ORD-1002", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED", expected_refund_request_amount=150.0)],
     ),
     EvalScenario(
         id="s3_outside_return_window_rejected", upstream_scenario="3",
@@ -89,7 +94,7 @@ AGENT_SCENARIOS: tuple[EvalScenario, ...] = (
         id="s5b_boundary_52_escalates", upstream_scenario="5",
         title="Boundary case above standard authority",
         message="The item in ORD-1011 arrived damaged. I need a refund for that order.",
-        cases=[ExpectedCase(order_id="ORD-1011", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED")],
+        cases=[ExpectedCase(order_id="ORD-1011", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED", expected_refund_request_amount=52.0)],
     ),
     EvalScenario(
         id="s6_risk_signals_escalate", upstream_scenario="6",
