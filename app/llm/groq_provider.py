@@ -37,6 +37,13 @@ _TRANSIENT_ERRORS = (
     openai.InternalServerError,
 )
 
+# Groq's current strict Structured Outputs documentation lists these model IDs.
+# Keep provider capabilities explicit rather than assuming every Groq model can
+# accept `json_schema` with strict constrained decoding.
+_GROQ_STRICT_SCHEMA_MODELS = frozenset(
+    {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+)
+
 
 def to_openai_function_tools(
     schemas: list[dict[str, Any]],
@@ -63,7 +70,6 @@ def to_groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     false`. Pydantic represents optional fields as nullable schemas that may be
     omitted, so at the provider boundary we require those nullable fields to be
     present (possibly as null) without changing the runtime/Pydantic contract.
-    Unsupported/default annotations are removed from the wire schema.
     """
 
     def normalize(node: Any) -> Any:
@@ -180,7 +186,7 @@ def normalize_response(
 class GroqProvider:
     """Thin OpenAI-compatible client pointed at Groq."""
 
-    supports_response_schema = True
+    supports_response_schema: bool
 
     def __init__(self, settings: Settings) -> None:
         if not settings.groq_api_key:
@@ -190,6 +196,7 @@ class GroqProvider:
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
         self._reasoning_effort = settings.llm_reasoning_effort
+        self.supports_response_schema = self._model in _GROQ_STRICT_SCHEMA_MODELS
         self._client = openai.OpenAI(
             api_key=settings.groq_api_key,
             base_url=GROQ_BASE_URL,
@@ -205,11 +212,16 @@ class GroqProvider:
     ) -> ModelResponse:
         """Call Groq using provider-owned wire-format translation.
 
-        Groq documents Structured Outputs as incompatible with tool use, so a
-        response schema is accepted only on a no-tools finalization/repair call.
+        Groq documents Structured Outputs as incompatible with tool use. Strict
+        schema mode is also model-specific, so unsupported model IDs fail fast
+        instead of sending a request that Groq would reject.
         """
         if response_schema is not None and tools:
             raise ValueError("response_schema requires tools=None")
+        if response_schema is not None and not self.supports_response_schema:
+            raise ValueError(
+                f"Groq model {self._model!r} does not support configured strict response schemas"
+            )
 
         kwargs: dict[str, Any] = {
             "model": self._model,
