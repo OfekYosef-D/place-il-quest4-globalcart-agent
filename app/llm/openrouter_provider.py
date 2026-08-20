@@ -1,8 +1,8 @@
 """OpenRouter adapter over the OpenAI-compatible chat-completions API.
 
 OpenRouter is used as a gateway to hosted models while the agent runtime stays
-provider-neutral. The adapter owns authentication, request routing hints,
-OpenAI wire conversion, structured-output requests, and response normalization.
+provider-neutral. The adapter owns authentication, routing hints, wire-format
+conversion, structured-output requests, and response normalization.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import openai
 from app.config import Settings
 from app.llm.base import ModelResponse, TransientLLMFailure
 from app.llm.openai_compat import (
+    json_schema_response_format,
     normalize_response,
     to_openai_function_tools,
     to_wire_messages,
@@ -32,12 +33,13 @@ _TRANSIENT_ERRORS = (
 
 
 class OpenRouterProvider:
-    """Thin OpenRouter client for tool use and schema-constrained final output."""
+    """Thin OpenRouter client for autonomous tool use and strict final JSON."""
 
-    # The gateway API can request JSON Schema output. `require_parameters`
-    # below restricts routing to inference endpoints that support the request
-    # parameters we actually send.
+    # OpenRouter exposes JSON-schema structured outputs and tool calling for
+    # compatible models. The request also sets require_parameters so routing is
+    # limited to endpoints that advertise support for every parameter we send.
     supports_response_schema = True
+    supports_response_schema_with_tools = True
 
     def __init__(self, settings: Settings) -> None:
         if not settings.openrouter_api_key:
@@ -61,14 +63,10 @@ class OpenRouterProvider:
     ) -> ModelResponse:
         """Call the configured OpenRouter model.
 
-        Normal agentic calls expose tools and let the model choose the next
-        action. No-tools finalization/repair calls may additionally request a
-        JSON-Schema-constrained response. The runtime never sees OpenRouter
-        request fields.
+        Tool-enabled calls remain autonomous: the model may request a tool or
+        finish with content. When a response schema is supplied, final content
+        is constrained to the project contract while tools remain available.
         """
-        if response_schema is not None and tools:
-            raise ValueError("response_schema requires tools=None")
-
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": to_wire_messages(messages),
@@ -77,19 +75,8 @@ class OpenRouterProvider:
         if tools:
             kwargs["tools"] = to_openai_function_tools(tools)
         if response_schema is not None:
-            kwargs["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "globalcart_agent_result",
-                    "strict": True,
-                    "schema": response_schema,
-                },
-            }
+            kwargs["response_format"] = json_schema_response_format(response_schema)
 
-        # OpenRouter can route one model through multiple inference providers.
-        # When tools/structured output are requested, keep only endpoints that
-        # advertise support for the exact parameters instead of silently
-        # degrading the protocol.
         if tools or response_schema is not None:
             kwargs["extra_body"] = {
                 "provider": {"require_parameters": True}
