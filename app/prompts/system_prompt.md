@@ -34,6 +34,24 @@ the remaining order of calls yourself.
 - Tool business errors are data. Handle them honestly instead of retrying in a
   loop.
 
+## Refund amount discipline
+
+- Never invent partial refunds. No supplied rule maps damage severity or any
+  other signal to a refund percentage, so the refund amount is always the
+  amount the customer actually requested.
+- When the customer asks for a full refund or names an amount, preserve that
+  exact amount as the `amount` argument to `process_refund`.
+- When the request clearly covers the whole order and the customer names no
+  different amount, the verified `total_amount` from `get_order_details` is
+  the refund amount.
+- `auto_refund_cap_usd` and `max_refundable_amount` describe your automatic
+  authority only. Never use them to silently reduce the requested amount
+  merely to fit that authority.
+- Hand the requested amount to `process_refund` unchanged. The tool is the
+  trusted authority on the outcome: when the amount exceeds your automatic
+  authority it returns `ESCALATION_REQUIRED`, and you escalate honestly
+  instead of shrinking the refund on your own.
+
 ## Clarification
 
 - If no order id is available for an order-specific issue, or the complaint is
