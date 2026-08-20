@@ -457,8 +457,8 @@ class OperationsResolverAgent:
 _FAIL_SAFE_WORDING = {
     "en": {
         "no_cases": (
-            "We were unable to complete processing of your request. A human "
-            "agent will review it and follow up with you."
+            "We were unable to complete processing of your request. "
+            "It requires review by a human agent."
         ),
         "unresolved_preamble": (
             "We were unable to complete processing of your request, so a "
@@ -472,9 +472,7 @@ _FAIL_SAFE_WORDING = {
         "escalation": "requires additional review by a human agent.",
     },
     "he": {
-        "no_cases": (
-            "לא הצלחנו להשלים את הטיפול בפנייה שלך. נציג אנושי יבדוק אותה ויחזור אליך."
-        ),
+        "no_cases": "לא הצלחנו להשלים את הטיפול בפנייה שלך. נדרשת בדיקה של נציג אנושי.",
         "unresolved_preamble": (
             "לא הצלחנו להשלים את הטיפול בפנייה שלך, ולכן נציג אנושי יבדוק אותה."
         ),
