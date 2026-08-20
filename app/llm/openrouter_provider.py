@@ -32,17 +32,15 @@ _TRANSIENT_ERRORS = (
 )
 
 # Capability is explicit rather than assumed for every model OpenRouter hosts.
-# The selected Qwen route currently advertises both `tools` and
-# `response_format`; add future model IDs here only after verifying their
-# OpenRouter model metadata/documentation.
-_STRUCTURED_TOOL_MODELS = frozenset({"qwen/qwen3.5-397b-a17b"})
+# The selected Qwen route advertises `response_format`; future model IDs should
+# be added only after checking the current OpenRouter model metadata/docs.
+_STRUCTURED_OUTPUT_MODELS = frozenset({"qwen/qwen3.5-397b-a17b"})
 
 
 class OpenRouterProvider:
-    """Thin OpenRouter client for autonomous tool use and strict final JSON."""
+    """Thin OpenRouter client for tool use and strict no-tools final JSON."""
 
     supports_response_schema: bool
-    supports_response_schema_with_tools: bool
 
     def __init__(self, settings: Settings) -> None:
         if not settings.openrouter_api_key:
@@ -51,8 +49,7 @@ class OpenRouterProvider:
             raise ValueError("LLM_MODEL is not configured.")
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
-        self.supports_response_schema = self._model in _STRUCTURED_TOOL_MODELS
-        self.supports_response_schema_with_tools = self.supports_response_schema
+        self.supports_response_schema = self._model in _STRUCTURED_OUTPUT_MODELS
         self._client = openai.OpenAI(
             api_key=settings.openrouter_api_key,
             base_url=OPENROUTER_BASE_URL,
@@ -68,10 +65,13 @@ class OpenRouterProvider:
     ) -> ModelResponse:
         """Call the configured OpenRouter model.
 
-        Tool-enabled calls remain autonomous: the model may request a tool or
-        finish with content. For models whose capability is verified above,
-        final content can be schema constrained while tools remain available.
+        Normal agentic calls expose tools and let the model choose the next
+        action. Schema-constrained calls are intentionally no-tools calls so
+        the project does not depend on an unverified combination of provider
+        features. The parser and deterministic validator remain authoritative.
         """
+        if response_schema is not None and tools:
+            raise ValueError("OpenRouter response_schema requires tools=None")
         if response_schema is not None and not self.supports_response_schema:
             raise ValueError(
                 f"OpenRouter model {self._model!r} is not verified for strict response schemas"
@@ -90,9 +90,7 @@ class OpenRouterProvider:
         if tools or response_schema is not None:
             # Restrict routing to inference endpoints that advertise support
             # for every request parameter instead of silently degrading it.
-            kwargs["extra_body"] = {
-                "provider": {"require_parameters": True}
-            }
+            kwargs["extra_body"] = {"provider": {"require_parameters": True}}
 
         start = time.perf_counter()
         try:
