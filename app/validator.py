@@ -76,9 +76,17 @@ _TIMELINE_CONTEXT_TERMS = (
     "appear",
 )
 
-#: Phrases that assert a specific duration.
+#: Phrases that assert either a concrete duration ("3-5 business days",
+#: "within 2 weeks") or an unsupported vague processing-time promise
+#: ("standard processing time"). Policy windows can match the duration part,
+#: but are filtered below unless the sentence also predicts an operational
+#: event.
 _TIMELINE_RE = re.compile(
-    r"\b(within|in)\b[^.!?;\n]*?\b(?:\d+(?:[-–]\d+)?\s+|a\s+few\s+)?(?:business\s+)?(?:days?|hours?|weeks?)\b",
+    r"\b(?:"
+    r"(?:(?:within|in|allow)\s+)?(?:\d+(?:[-–]\d+)?|a\s+few)\s+"
+    r"(?:business\s+)?(?:days?|hours?|weeks?)"
+    r"|(?:standard|normal|usual|typical)\s+(?:payment\s+)?processing\s+time"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -94,9 +102,11 @@ _OPERATIONAL_TIMELINE_PREDICATE_RE = re.compile(
 
 #: The supplied tools can require human review, but they never promise that a
 #: representative will contact/reach out/follow up with the customer. Keep
-#: review status distinct from an invented future service commitment.
+#: review status distinct from an invented future service commitment. Match
+#: passive forms too ("you will be contacted").
 _UNSUPPORTED_FOLLOWUP_PROMISE_RE = re.compile(
-    r"\b(?:will|shall|going\s+to)\b[^.!?;\n]{0,80}\b(?:contact|reach\s+out|follow\s+up)\b",
+    r"\b(?:will|shall|going\s+to)\b[^.!?;\n]{0,80}\b"
+    r"(?:contact\w*|reach(?:ed|ing)?\s+out|follow(?:ed|ing)?\s+up)\b",
     re.IGNORECASE,
 )
 
@@ -447,12 +457,9 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
             )
 
     # Human review is supported by ESCALATION_REQUIRED; a promise that someone
-    # will contact/reach out/follow up is not part of a normal completed case.
-    # FAILED_SAFE uses a deterministic runtime-owned recovery message and is
-    # kept outside this model-output wording guard.
-    if result.status.value != "FAILED_SAFE" and any(
-        _UNSUPPORTED_FOLLOWUP_PROMISE_RE.search(sentence) for sentence in sentences
-    ):
+    # will contact/reach out/follow up is not. No supplied tool commits another
+    # person to a future customer interaction.
+    if any(_UNSUPPORTED_FOLLOWUP_PROMISE_RE.search(sentence) for sentence in sentences):
         issues.append(
             "customer_response invents an unsupported future contact/follow-up commitment "
             "(issue: UNSUPPORTED_FOLLOWUP_PROMISE)."
