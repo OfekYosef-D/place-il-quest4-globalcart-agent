@@ -14,10 +14,18 @@ class FakeProvider:
     """
 
     supports_response_schema = False
+    supports_response_schema_with_tools = False
 
-    def __init__(self, scripted: list, *, supports_response_schema: bool = False) -> None:
+    def __init__(
+        self,
+        scripted: list,
+        *,
+        supports_response_schema: bool = False,
+        supports_response_schema_with_tools: bool = False,
+    ) -> None:
         self._scripted = list(scripted)
         self.supports_response_schema = supports_response_schema
+        self.supports_response_schema_with_tools = supports_response_schema_with_tools
         self.calls: list[tuple[list, object]] = []
         self.response_schemas: list[object] = []
 
