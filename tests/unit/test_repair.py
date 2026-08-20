@@ -55,12 +55,29 @@ def test_malformed_first_valid_correction_accepted_without_tools():
     assert outcome.assessment == ModelAssessment()
     assert len(provider.calls) == 1
     assert provider.calls[0][1] is None, "repair must call the provider with tools=None"
-    # Real model-call metadata travels with the accepted repair (fix 7).
+    assert provider.response_schemas == [None]
     assert outcome.attempts == 1
     assert outcome.response.provider == "fake"
     assert outcome.response.model == "fake-model"
     assert outcome.response.total_tokens == 15
     assert outcome.response.latency_ms == 1.0
+
+
+def test_schema_capable_provider_receives_final_response_contract():
+    provider = FakeProvider(
+        [final_response(json.dumps(VALID_RESULT))],
+        supports_response_schema=True,
+    )
+    _repair(provider)
+
+    schema = provider.response_schemas[0]
+    assert isinstance(schema, dict)
+    assert {"status", "reasoning_chain", "action_taken", "customer_response"}.issubset(
+        schema["properties"]
+    )
+    assert "sentiment" in schema["properties"]
+    assert "urgency" in schema["properties"]
+    assert provider.calls[0][1] is None
 
 
 def test_caller_messages_are_never_contaminated():
@@ -69,7 +86,6 @@ def test_caller_messages_are_never_contaminated():
     _repair(provider, messages=messages)
     assert messages == RUN_MESSAGES
 
-    # The ephemeral repair exchange carried the correction instruction.
     repair_messages = provider.calls[0][0]
     assert len(repair_messages) == len(RUN_MESSAGES) + 1
     correction = repair_messages[-1]
@@ -94,7 +110,7 @@ def test_transient_failure_retried_within_single_repair_attempt():
     provider = FakeProvider([TransientLLMFailure("503"), final_response(json.dumps(VALID_RESULT))])
     outcome = _repair(provider)
     assert outcome.result.status.value == "COMPLETED"
-    assert outcome.attempts == 2, "metadata reflects the real retry count"
+    assert outcome.attempts == 2
     assert len(provider.calls) == 2
 
 
@@ -102,7 +118,7 @@ def test_exhausted_transient_retries_raise_repair_failed():
     provider = FakeProvider([TransientLLMFailure("503")] * 5)
     with pytest.raises(RepairFailed, match="failed"):
         _repair(provider)
-    assert len(provider.calls) == 3, "1 initial attempt + 2 configured retries"
+    assert len(provider.calls) == 3
 
 
 def test_non_transient_failure_raises_repair_failed_without_retry():
