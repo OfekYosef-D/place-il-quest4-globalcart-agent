@@ -6,18 +6,9 @@ Milestone 3 selects a runtime model from measured project behavior, not from mod
 
 Reliability is the gate; efficiency is the tie-breaker.
 
-A candidate is not release-eligible if the final evaluation run contains a `CRITICAL_FAILURE`, including a wrong business decision, hallucinated case, false refund/action claim, refund-precondition bypass, customer-facing internal risk disclosure, crash, or bounded-loop failure.
+A candidate is not release-eligible if the final evaluation contains a `CRITICAL_FAILURE`, including a wrong business decision, hallucinated case, false refund/action claim, silent requested-amount reduction, refund-precondition bypass, customer-facing internal risk disclosure, crash, or bounded-loop failure.
 
-Among candidates that clear that gate, compare:
-
-- clean-pass rate and warning rate;
-- stability across repetitions;
-- latency;
-- total tokens;
-- estimated API cost;
-- tool-call count / repeated calls;
-- repair usage;
-- observed normal step count.
+Among candidates that clear that gate, compare clean-pass stability, warnings, latency, tokens, tool/retry behavior, and cost when the price is actually pinned/measurable.
 
 Do not use an LLM judge as business authority.
 
@@ -30,31 +21,68 @@ Useful context for this problem shape:
 
 External leaderboards are context only. The release decision for this project comes from the local GlobalCart scenario suite because its tools, guardrails, and failure modes are the actual target.
 
-## Initial Groq candidates
+## Previous Groq / GPT-OSS evidence
 
-`evals/candidates.json` currently defines:
+The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. The aggregate matrix was contaminated by Groq daily token-limit `429` responses and therefore must not be presented as clean model accuracy.
 
-- `openai/gpt-oss-20b`, medium reasoning;
-- `openai/gpt-oss-120b`, medium reasoning.
+The genuine pre-quota failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). Source review showed the system prompt had not stated the requested-amount semantics explicitly. The runtime/tools behaved as implemented; the prompt/eval contract was incomplete.
 
-The candidate file is configuration, not agent logic. It records a `checked_at` date and pricing source because public model pricing is mutable.
+That gap is now hardened model-independently:
 
-Groq's API currently documents `reasoning_effort=low|medium|high` for both GPT-OSS models. The provider exposes that setting without coupling the core agent loop to a specific model.
+- the prompt prohibits invented/silent partial refunds and preserves the requested/full order amount;
+- eval scenarios pin `ORD-1002` to `150.0` and `ORD-1011` to `52.0` at the actual `process_refund` call boundary;
+- any reduction or missing required refund request is a critical eval failure.
 
-Official references checked 2026-08-19:
+The 120B setup also produced additional genuine protocol/timeline failures, so it is not an active release candidate.
 
-- https://console.groq.com/docs/api-reference
-- https://console.groq.com/docs/reasoning
-- https://console.groq.com/docs/model/openai/gpt-oss-20b
-- https://console.groq.com/docs/model/openai/gpt-oss-120b
+## Active provider/model candidate
+
+The next candidate is:
+
+- provider/gateway: `openrouter`;
+- model: `qwen/qwen3.5-397b-a17b`;
+- reasoning override: unset/provider default;
+- configured per-million price: intentionally unset because OpenRouter can route the same model through multiple backends with different prices unless a backend is pinned.
+
+Why this candidate is worth testing:
+
+- the current OpenRouter model page advertises tool calling and `response_format` support for this model;
+- OpenRouter exposes multiple inference backends for the same model and can restrict routing to endpoints that support requested parameters via `provider.require_parameters=true`;
+- current tau-bench/OpenRouter benchmark evidence makes Qwen3.5-397B-A17B a materially more relevant agentic candidate than choosing another model from size/reputation alone.
+
+Official references checked 2026-08-20:
+
+- https://openrouter.ai/qwen/qwen3.5-397b-a17b
+- https://openrouter.ai/qwen/qwen3.5-397b-a17b/providers
+- https://openrouter.ai/docs/guides/routing/provider-selection
+- https://openrouter.ai/docs/features/tool-calling
+- https://taubench.com/
+
+## Provider architecture
+
+The runtime depends only on `LLMProvider`. Provider selection is configuration:
+
+```text
+OperationsResolverAgent
+        |
+        v
+    LLMProvider
+      /     \
+     /       \
+GroqProvider OpenRouterProvider
+```
+
+Both adapters normalize into the same `ModelResponse`. OpenAI-compatible wire conversion is shared in one small helper module rather than duplicated between adapters. API keys remain provider-specific environment variables and never enter the agent loop.
+
+The final-output contract is also provider-neutral: providers may accept an optional JSON Schema for no-tools structured responses. The existing deterministic parser and validator remain authoritative even when a provider offers native schema enforcement.
 
 ## What is intentionally not claimed yet
 
-Until live evals are executed with credentials:
+Until the OpenRouter candidate is run with local credentials:
 
-- there is no chosen release model;
-- there is no project-specific latency/token/cost result;
-- the provisional `AGENT_MAX_STEPS` value is not considered calibrated;
-- Milestone 3 is not complete.
+- Qwen3.5-397B-A17B is a **candidate**, not the selected release winner;
+- there is no project-specific OpenRouter latency/token/cost result;
+- there is no claim that all nine live scenarios pass;
+- the provisional `AGENT_MAX_STEPS` value is not considered calibrated from this candidate.
 
-Record those conclusions only from generated `eval-results/` evidence after the full deterministic test suite and supplied 33-check verifier are green.
+First run the two known authority-boundary smoke scenarios. Only if they pass should the full nine-scenario catalog be run once; repetitions come after broad correctness.
