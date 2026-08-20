@@ -1,8 +1,8 @@
 # GlobalCart Operations Resolver Agent - Place IL Quest 4 Stage 1
 
-Status: **Milestones 0-2 implemented and reviewed. Milestone 3 evaluation harness/model-comparison tooling is implemented; live model evidence, max-step calibration, and final release-model selection are still pending.**
+Status: **Core runtime, guardrails, provider abstraction, OpenRouter integration, and deterministic eval harness are implemented. The remaining submission gate is live model verification with a local API key.**
 
-A deliberately small single autonomous Operations Resolver Agent for a mock retail support environment. The project is designed to be safe, measurable, and easy to explain: the LLM chooses what to investigate and which supplied tool to call next; deterministic Python guardrails own execution authority, trusted state, validation, bounded loops, and fail-safe behavior.
+A deliberately small single autonomous Operations Resolver Agent for a mock retail support environment. The LLM chooses what to investigate and which supplied tool to call next; deterministic Python guardrails own execution authority, trusted state, validation, bounded loops, and fail-safe behavior.
 
 > **Probabilistic intelligence, deterministic guardrails.**
 
@@ -14,8 +14,9 @@ Customer / CLI
       v
 OperationsResolverAgent
       |
-      +--> provider-agnostic LLM interface
-      |       `--> Groq/OpenAI-compatible adapter
+      +--> provider-agnostic LLMProvider
+      |       +--> OpenRouterProvider  (active eval path)
+      |       `--> GroqProvider        (kept as an alternate adapter)
       |
       +--> typed short-term AgentState / CaseState
       |
@@ -23,6 +24,7 @@ OperationsResolverAgent
       |       `--> guarded ToolExecutor + deterministic cache
       |
       +--> one targeted no-new-tools output repair
+      |       `--> native JSON Schema when the provider supports it
       |
       +--> deterministic consistency validator
       |
@@ -40,6 +42,7 @@ Important Stage 1 guardrails:
 - customer text is untrusted case data, never policy/system authority;
 - only the supplied tools are exposed;
 - `process_refund` cannot execute unless the same order already has trusted `check_return_policy -> eligible=true` evidence;
+- the agent must preserve a customer's requested/full refund amount and must not silently reduce it to an automatic-authority cap;
 - ineligible policy results terminate without executing a refund merely to get another rejection;
 - `ORDER_NOT_FOUND` stops that order without fabricated facts;
 - false refund-success claims are rejected unless trusted `process_refund` actually returned `APPROVED`;
@@ -47,13 +50,14 @@ Important Stage 1 guardrails:
 - customer responses cannot expose internal fraud/risk/profile fields;
 - repeated calls are cached and no-progress/max-step protection bounds loops;
 - malformed/inconsistent final JSON gets at most one correction pass and no new tools;
+- schema-capable providers can constrain that no-tools repair to the `AgentResult` JSON Schema;
 - unresolved failures fail safe to human review while already-resolved cases retain their trusted outcomes.
 
 See `docs/GUARDRAILS.md` for the authoritative addendum.
 
 ## Human escalation
 
-Human review is an explicit business outcome, not an exception path hidden from the customer. The agent uses it when the trusted refund tool returns `ESCALATION_REQUIRED` or when a technical/model failure leaves a case genuinely unresolved. It does **not** claim that money was refunded before approval. Already-resolved cases remain grounded in their trusted outcome even if another case in the same request needs human review.
+Human review is an explicit business outcome, not an exception path hidden from the customer. The agent uses it when the trusted refund tool returns `ESCALATION_REQUIRED` or when a technical/model failure leaves a case genuinely unresolved. It does **not** claim that money was refunded before approval.
 
 ## Error handling and edge cases
 
@@ -66,6 +70,7 @@ Important cases covered by tests/evals include:
 - invalid tool arguments and business-error payloads;
 - processing/cancelled/non-returnable/out-of-window orders;
 - exact authority-boundary cases on both sides of the threshold;
+- silent partial-refund attempts on `ORD-1002` and `ORD-1011` are critical eval failures;
 - multiple orders with independent outcomes in one run;
 - repeated deterministic calls served from cache and bounded for no progress;
 - malformed model output with exactly one no-new-tools repair attempt;
@@ -81,22 +86,33 @@ bash scripts/bootstrap_upstream.sh
 
 It is placed under the git-ignored `.vendor/place-il-quests` path. See `docs/UPSTREAM.md` for the pinned source commit and verifier command.
 
-Install project dependencies:
+Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 python -m pip install -r requirements-dev.txt
 ```
 
-Create `.env` from `.env.example` and set at minimum:
+## Plug-and-play OpenRouter setup
+
+Create/update the local `.env` (never commit it):
 
 ```dotenv
-LLM_PROVIDER=groq
-LLM_MODEL=openai/gpt-oss-20b
-GROQ_API_KEY=your-local-secret
+LLM_PROVIDER=openrouter
+LLM_MODEL=qwen/qwen3.5-397b-a17b
+OPENROUTER_API_KEY=your-local-secret
+LLM_REASONING_EFFORT=
 ```
 
-Never commit `.env` or API keys.
+The active candidate is intentionally configured outside agent logic. OpenRouter uses an OpenAI-compatible API; the adapter sends tool requests in OpenAI function format and, for schema-constrained no-tools calls, uses native `response_format=json_schema`. Requests that need tools or structured output also set OpenRouter's `provider.require_parameters=true`, preventing routing to an inference endpoint that does not advertise the requested parameters.
+
+Official capability references checked 2026-08-20:
+
+- OpenRouter Qwen3.5-397B-A17B model/capabilities: https://openrouter.ai/qwen/qwen3.5-397b-a17b
+- OpenRouter provider routing: https://openrouter.ai/docs/guides/routing/provider-selection
+- OpenRouter tool calling: https://openrouter.ai/docs/features/tool-calling
+
+Groq remains available by setting `LLM_PROVIDER=groq`, a Groq-supported model, and `GROQ_API_KEY`; it is not the active eval path while the current Groq quota is exhausted.
 
 ## Run the agent
 
@@ -120,7 +136,7 @@ python run_agent.py --verbose
 
 ## Evaluation strategy
 
-Milestone 3 separates **deterministic correctness tests** from **live-model evals**. The live scorer is also deterministic: there is no evaluator LLM.
+Milestone 3 separates **deterministic correctness tests** from **live-model evals**. The live scorer is deterministic; there is no evaluator LLM.
 
 Per run it records/checks:
 
@@ -129,39 +145,58 @@ Per run it records/checks:
 - missing/unexpected order cases / hallucination signals;
 - stop/fail-safe behavior;
 - refund-precondition and output-guardrail violations;
+- exact requested refund amounts for the known authority-boundary scenarios;
 - unnecessary blocked/invalid/repeated calls as warnings;
 - wall-clock duration and model-call latency;
-- tokens, estimated cost, tool-call count, repair usage, and steps.
+- tokens, estimated cost when pinned, tool-call count, repair usage, and steps.
 
 Classification:
 
 - `CLEAN_PASS` - correct/safe with no efficiency warning;
 - `PASS_WITH_WARNING` - correct/safe but harmless unnecessary work occurred;
-- `CRITICAL_FAILURE` - wrong decision, hallucination, false refund/action claim, guardrail bypass, internal-risk disclosure, crash, or bounded-loop failure.
+- `CRITICAL_FAILURE` - wrong decision, hallucination, false refund/action claim, silent refund reduction, guardrail bypass, crash, or bounded-loop failure.
 
 Correctness/safety gates model selection. Efficiency only breaks ties among reliable candidates.
 
-### Dry-run the eval matrix
-
-Does not require an API key or model calls:
+### Deterministic verification
 
 ```bash
+python -m pytest tests -q
+python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scenarios.py"
 python run_evals.py --dry-run
 ```
 
-### Live model comparison
+### First live smoke: the previously failing authority cases
 
-The initial external candidate configuration is in `evals/candidates.json`. Pricing there is dated/configuration data, not business logic.
+Run these before spending calls on the whole catalog:
 
-After setting `GROQ_API_KEY` locally:
+```bash
+python run_evals.py \
+  --scenario s2_standard_above_cap_escalates \
+  --scenario s5b_boundary_52_escalates \
+  --repetitions 1 \
+  --skip-tool-probes
+```
+
+Both must preserve the requested refund amount (`150.0` and `52.0`) and end in `HUMAN_ESCALATION` / trusted `ESCALATION_REQUIRED`.
+
+### One-pass full live catalog
+
+Only after the smoke is green:
+
+```bash
+python run_evals.py --repetitions 1
+```
+
+Generated reports go to git-ignored `eval-results/` as JSON + CSV. The runner exits non-zero when a critical failure occurs.
+
+Use repetitions only after broad correctness is established:
 
 ```bash
 python run_evals.py --repetitions 3
 ```
 
-Generated reports go to git-ignored `eval-results/` as JSON + CSV. The runner exits non-zero when a critical failure occurs.
-
-**No release-model winner or project-specific performance numbers are claimed until these live evals are actually executed.** See `docs/MODEL_SELECTION.md` and `docs/M3_RUNBOOK.md`.
+**No release-model winner or final project-specific performance number is claimed until live evals are executed with the local OpenRouter key.** See `docs/MODEL_SELECTION.md` and `docs/M3_RUNBOOK.md`.
 
 ## Scenario coverage
 
@@ -174,7 +209,7 @@ The live catalog covers the supplied customer-facing outcomes, including:
 - processing/cancelled multi-order rejection;
 - nonexistent-order hallucination trap.
 
-The supplied bad-input scenario is represented separately as five direct source-behavior probes because upstream defines it as tool-call/error behavior, not a normal customer ticket. Runtime handling of business errors and guardrail behavior remains covered by deterministic tests.
+The supplied bad-input scenario is represented separately as five direct source-behavior probes because upstream defines it as tool-call/error behavior, not a normal customer ticket.
 
 ## Copy/paste demo commands
 
@@ -187,7 +222,7 @@ python run_agent.py --verbose --message "The item in ORD-1001 arrived damaged. P
 Escalation:
 
 ```bash
-python run_agent.py --verbose --message "ORD-1002 arrived damaged and I want a refund."
+python run_agent.py --verbose --message "Order ORD-1002 arrived damaged and leaking. I paid $150 and want a refund."
 ```
 
 Policy rejection:
@@ -204,17 +239,18 @@ python run_agent.py --verbose --message "My order ORD-2222 never arrived and I w
 
 ## Engineering choices / non-goals
 
-Stage 1 intentionally does **not** add LangGraph, LangChain orchestration, MCP, multi-agent routing, a database, Redis, persistent customer memory, an LLM judge, duplicate policy logic, or production payment/idempotency infrastructure. The seams that matter for a later multi-agent stage already exist: clear agent I/O, separated tool access, and a provider abstraction.
+Stage 1 intentionally does **not** add LangGraph, LangChain orchestration, MCP, multi-agent routing, a database, Redis, persistent customer memory, an LLM judge, duplicate policy logic, or production payment/idempotency infrastructure. The seams that matter for a later multi-agent stage already exist: clear agent I/O, separated tool access, and a small provider abstraction.
 
-## Remaining Milestone 3 work
+## Remaining submission gate
 
-The code can prepare evidence; it cannot honestly fabricate it. Before marking Milestone 3 complete:
+Before marking the project submission-ready:
 
-1. synchronize the local checkout with `origin/main`;
-2. rerun the full pytest suite and supplied 33-check verifier;
-3. run the live candidate matrix with local Groq credentials;
-4. select the model from measured reliability first, efficiency second;
-5. calibrate `AGENT_MAX_STEPS` from observed passing traces and rerun;
-6. record the final measured evidence here.
+1. synchronize the local checkout safely with the prepared branch/main;
+2. run the deterministic verification commands above;
+3. add only the local `OPENROUTER_API_KEY` secret;
+4. run the two authority smoke scenarios;
+5. if green, run all nine live scenarios once;
+6. only then run repetitions if time/budget permits and record measured evidence;
+7. confirm no secrets, `.vendor` files, or generated `eval-results/` are committed.
 
-Exact commands are in `docs/M3_RUNBOOK.md`.
+Exact commands and stop conditions are in `docs/M3_RUNBOOK.md`.
