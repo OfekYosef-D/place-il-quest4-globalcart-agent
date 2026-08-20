@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from app.output_parser import ModelAssessment, OutputParseError, parse_final_output
+from app.output_parser import (
+    ModelAssessment,
+    OutputParseError,
+    final_output_json_schema,
+    parse_final_output,
+)
 
 VALID_RESULT = {
     "status": "COMPLETED",
@@ -22,6 +27,18 @@ VALID_RESULT = {
     },
     "customer_response": "Your refund was approved.",
 }
+
+
+def test_final_output_schema_is_derived_from_agent_result_and_allows_audit_keys():
+    schema = final_output_json_schema()
+    assert schema["additionalProperties"] is False
+    assert {"status", "reasoning_chain", "action_taken", "customer_response"}.issubset(
+        set(schema["required"])
+    )
+    assert "sentiment" in schema["properties"]
+    assert "urgency" in schema["properties"]
+    assert "sentiment" not in schema["required"]
+    assert "urgency" not in schema["required"]
 
 
 def test_parses_clean_json():
@@ -91,7 +108,6 @@ def test_non_string_or_blank_assessment_becomes_none():
 
 
 def test_unexpected_top_level_extra_fields_fail_parsing():
-    """Fix 9: sentiment/urgency are the only tolerated internal keys."""
     payload = dict(VALID_RESULT, confidence=0.9, recommendation="approve")
     with pytest.raises(OutputParseError, match="schema validation"):
         parse_final_output(json.dumps(payload))
