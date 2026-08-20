@@ -6,8 +6,6 @@ from app.config import Settings
 from app.llm.base import LLMProvider
 from app.llm.groq_provider import GroqProvider
 from app.llm.openrouter_provider import OpenRouterProvider
-from app.llm.schema_bound import SchemaBoundProvider
-from app.output_parser import final_output_json_schema
 
 _PROVIDER_TYPES = {
     "groq": GroqProvider,
@@ -41,13 +39,7 @@ def has_provider_api_key(settings: Settings) -> bool:
 
 
 def build_provider(settings: Settings) -> LLMProvider:
-    """Build one adapter and bind the resolver's structured final contract.
-
-    The wrapper is inert for providers that cannot combine tools with response
-    schemas. For capable providers (currently OpenRouter), the same autonomous
-    tool call can either request another tool or finish with schema-constrained
-    final JSON.
-    """
+    """Build the configured adapter; the agent loop remains provider-neutral."""
     normalized = settings.llm_provider.strip().lower()
     provider_type = _PROVIDER_TYPES.get(normalized)
     if provider_type is None:
@@ -55,5 +47,4 @@ def build_provider(settings: Settings) -> LLMProvider:
             f"Unsupported LLM_PROVIDER {settings.llm_provider!r}; supported providers: "
             + ", ".join(sorted(_PROVIDER_TYPES))
         )
-    provider = provider_type(settings)
-    return SchemaBoundProvider(provider, final_output_json_schema())
+    return provider_type(settings)
