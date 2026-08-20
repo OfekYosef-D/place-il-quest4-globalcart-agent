@@ -31,15 +31,18 @@ _TRANSIENT_ERRORS = (
     openai.InternalServerError,
 )
 
+# Capability is explicit rather than assumed for every model OpenRouter hosts.
+# The selected Qwen route currently advertises both `tools` and
+# `response_format`; add future model IDs here only after verifying their
+# OpenRouter model metadata/documentation.
+_STRUCTURED_TOOL_MODELS = frozenset({"qwen/qwen3.5-397b-a17b"})
+
 
 class OpenRouterProvider:
     """Thin OpenRouter client for autonomous tool use and strict final JSON."""
 
-    # OpenRouter exposes JSON-schema structured outputs and tool calling for
-    # compatible models. The request also sets require_parameters so routing is
-    # limited to endpoints that advertise support for every parameter we send.
-    supports_response_schema = True
-    supports_response_schema_with_tools = True
+    supports_response_schema: bool
+    supports_response_schema_with_tools: bool
 
     def __init__(self, settings: Settings) -> None:
         if not settings.openrouter_api_key:
@@ -48,6 +51,8 @@ class OpenRouterProvider:
             raise ValueError("LLM_MODEL is not configured.")
         self._model = settings.llm_model
         self._temperature = settings.llm_temperature
+        self.supports_response_schema = self._model in _STRUCTURED_TOOL_MODELS
+        self.supports_response_schema_with_tools = self.supports_response_schema
         self._client = openai.OpenAI(
             api_key=settings.openrouter_api_key,
             base_url=OPENROUTER_BASE_URL,
@@ -64,9 +69,14 @@ class OpenRouterProvider:
         """Call the configured OpenRouter model.
 
         Tool-enabled calls remain autonomous: the model may request a tool or
-        finish with content. When a response schema is supplied, final content
-        is constrained to the project contract while tools remain available.
+        finish with content. For models whose capability is verified above,
+        final content can be schema constrained while tools remain available.
         """
+        if response_schema is not None and not self.supports_response_schema:
+            raise ValueError(
+                f"OpenRouter model {self._model!r} is not verified for strict response schemas"
+            )
+
         kwargs: dict[str, Any] = {
             "model": self._model,
             "messages": to_wire_messages(messages),
@@ -78,6 +88,8 @@ class OpenRouterProvider:
             kwargs["response_format"] = json_schema_response_format(response_schema)
 
         if tools or response_schema is not None:
+            # Restrict routing to inference endpoints that advertise support
+            # for every request parameter instead of silently degrading it.
             kwargs["extra_body"] = {
                 "provider": {"require_parameters": True}
             }
