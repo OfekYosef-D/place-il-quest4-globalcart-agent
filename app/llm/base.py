@@ -79,14 +79,12 @@ class LLMProvider(Protocol):
 
     `messages` are canonical conversation records and `tools` are canonical
     starter-kit schemas. `response_schema`, when supplied, is provider-neutral
-    JSON Schema; the adapter owns translation to the provider wire format.
+    JSON Schema for a no-tools structured response; the adapter owns translation
+    to the provider wire format.
     """
 
     #: Adapter can request schema-constrained output when tools are disabled.
     supports_response_schema: bool
-    #: Adapter/model route can request schema-constrained final content while
-    #: keeping tools available in the same autonomous model call.
-    supports_response_schema_with_tools: bool
 
     def generate(
         self,
