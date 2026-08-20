@@ -4,36 +4,53 @@ This runbook is the remaining empirical part of Milestone 3. The repository cont
 
 ## 1. Synchronize safely
 
-The repository may have been updated directly on GitHub. Before testing:
+The prepared implementation lives on `origin/hardening/structured-finalization`. The local `main` may contain earlier local-only work, so do **not** reset, rebase, or force-update it merely to test this branch.
+
+First confirm the working tree is clean, then fetch and switch to the prepared remote branch:
 
 ```bash
 git status --short
 git fetch origin
-git pull --ff-only origin main
+git switch --create hardening/structured-finalization --track origin/hardening/structured-finalization
 git rev-parse HEAD
-git rev-parse origin/main
+git rev-parse origin/hardening/structured-finalization
 ```
 
-Do not reset, rebase, force-pull, or discard uncommitted work just to synchronize. If the tree is dirty or `--ff-only` cannot proceed, stop and inspect the exact local changes first.
-
-## 2. Verify deterministic behavior before spending API calls
+If the branch already exists locally, use:
 
 ```bash
+git switch hardening/structured-finalization
+git pull --ff-only origin hardening/structured-finalization
+```
+
+Required state before testing:
+
+- `git status --short` is empty;
+- local `HEAD` equals `origin/hardening/structured-finalization`.
+
+If the tree is dirty or `--ff-only` cannot proceed, stop and inspect the exact local changes. Do not discard local work just to synchronize.
+
+## 2. Bootstrap and verify deterministic behavior before spending API calls
+
+From the repository root:
+
+```bash
+python -m pip install -r requirements-dev.txt
+bash scripts/bootstrap_upstream.sh
 python -m pytest tests -q
-python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scenarios.py"
 python run_evals.py --dry-run
 ```
 
-Required before live evals:
+`bootstrap_upstream.sh` checks out the pinned authorized Place IL source under the git-ignored `.vendor/` directory and runs the supplied verifier. Required before live evals:
 
-- full pytest suite green;
+- project pytest suite green;
 - supplied verifier: 33/33;
-- dry-run lists the configured OpenRouter candidate, all agent scenarios, and Scenario 8 direct tool probes;
+- dry-run lists `qwen3.5-397b-a17b-openrouter`, all agent scenarios, and Scenario 8 direct tool probes;
 - working tree remains clean.
 
 ## 3. Configure the secret locally
 
-Create/update `.env` locally (already git-ignored):
+Copy `.env.example` to `.env` if needed, then add the key locally:
 
 ```dotenv
 LLM_PROVIDER=openrouter
@@ -42,11 +59,13 @@ OPENROUTER_API_KEY=...
 LLM_REASONING_EFFORT=
 ```
 
-Never paste the key into Git, logs, screenshots, or eval config files.
+Never paste the key into Git, screenshots, reports, or candidate config files. `.env` is git-ignored.
+
+The OpenRouter adapter uses the OpenAI-compatible chat API. For the selected Qwen model it keeps the supplied tools available while binding the final `AgentResult` JSON Schema; OpenRouter routing is restricted with `provider.require_parameters=true` so an endpoint must advertise support for every requested parameter. The deterministic parser and validator still verify the returned result against trusted tool evidence.
 
 ## 4. Run the two authority-boundary smoke scenarios first
 
-These are the cases that exposed the silent partial-refund bug in the earlier model setup. They are the fastest meaningful release gate for the new provider/model:
+These are the cases that exposed the silent partial-refund bug in the earlier setup. They are the fastest meaningful release gate for the new provider/model:
 
 ```bash
 python run_evals.py \
@@ -63,7 +82,7 @@ Required outcomes:
 - no `REFUND_REQUEST_AMOUNT_MISMATCH` or `REFUND_REQUEST_MISSING`;
 - no false refund-success claim.
 
-If either scenario is a `CRITICAL_FAILURE`, stop. Inspect the generated report before spending more calls.
+If either scenario is a `CRITICAL_FAILURE`, stop. Inspect `eval-results/latest.json` before spending more calls.
 
 ## 5. Run the full catalog once
 
@@ -104,13 +123,13 @@ For each candidate review:
 - inspect `observed_max_passing_steps` before changing `AGENT_MAX_STEPS`;
 - do not tune the step ceiling to one lucky run.
 
-OpenRouter may route the same model through different inference providers, whose prices can differ. The active candidate therefore leaves configured per-million pricing unset until a backend is intentionally pinned; do not present an inaccurate estimated-cost number as measured spend.
+OpenRouter may route the same model through different inference providers, whose prices and behavior can differ. The active candidate therefore leaves per-million pricing unset until a backend is intentionally pinned; do not present an inaccurate estimated-cost number as measured spend. The current release claim is for the model through OpenRouter routing, not for a specific underlying inference host.
 
 ## 8. Finalize Milestone 3 from evidence
 
 Only after the final live suite is green:
 
-1. record the model/provider and generated report evidence in README / model-selection notes;
+1. record the generated report evidence in README / model-selection notes;
 2. calibrate `AGENT_MAX_STEPS` only if passing traces justify a change;
 3. rerun pytest and the supplied 33 checks after any calibration change;
 4. confirm no secrets, `.vendor` files, or generated `eval-results/` were committed;
