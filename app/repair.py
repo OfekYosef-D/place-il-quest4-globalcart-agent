@@ -95,6 +95,16 @@ def _correction_instruction(failed_content: str | None, errors: list[str]) -> st
         "Problems found:",
     ]
     lines.extend(f"- {error}" for error in errors)
+    lines.extend(
+        [
+            "Correction invariants:",
+            "- Treat trusted tool results as authoritative; do not reinterpret a terminal outcome.",
+            "- If process_refund returned ESCALATION_REQUIRED, no refund was issued: use HUMAN_ESCALATION, do not report refund_amount/refund_id, and do not say the refund was approved, issued, processed, completed, or guaranteed to complete later.",
+            "- If a case is REJECTED or NO_ACTION, do not report refund_amount/refund_id.",
+            "- Do not promise unsupported contact, settlement, payment-processing, shipping, or delivery timing.",
+            "- ORDER_NOT_FOUND is a terminal NO_ACTION outcome; asking the customer to confirm the order number does not turn that resolved case into a successful refund.",
+        ]
+    )
     if failed_content:
         lines.append(f"Your previous output was: {failed_content}")
     lines.append(
