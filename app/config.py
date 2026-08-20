@@ -21,6 +21,7 @@ ENV_VAR_NAMES = (
     "LLM_PROVIDER",
     "LLM_MODEL",
     "GROQ_API_KEY",
+    "OPENROUTER_API_KEY",
     "LLM_TIMEOUT_SECONDS",
     "LLM_MAX_RETRIES",
     "LLM_RETRY_BACKOFF_SECONDS",
@@ -39,20 +40,20 @@ class Settings(BaseModel):
     llm_provider: str = "groq"
     llm_model: str | None = None
     groq_api_key: str | None = None
+    openrouter_api_key: str | None = None
 
     # LLM call discipline: initial attempt + llm_max_retries retries, applied
-    # by the runtime (Milestone 2) only to known transient failures.
+    # by the runtime only to known transient failures.
     llm_timeout_seconds: float = Field(default=30.0, gt=0)
     llm_max_retries: int = Field(default=2, ge=0)
-    #: Short bounded backoff base between transient-failure retries.
     llm_retry_backoff_seconds: float = Field(default=0.25, ge=0)
     llm_temperature: float = Field(default=0.0, ge=0)
-    #: Optional provider reasoning control. Candidate eval config sets this
-    #: explicitly for GPT-OSS; leaving it unset preserves provider defaults.
+    # Optional provider reasoning control. Leave unset unless the selected
+    # provider/model combination explicitly supports the configured values.
     llm_reasoning_effort: ReasoningEffort | None = None
 
     # Safety ceiling for the agent loop. Provisional default; calibrate from
-    # Milestone 3 eval traces rather than trusting this guess (AGENTS.md).
+    # passing live traces rather than from a guessed workflow length.
     agent_max_steps: int | None = Field(default=12, gt=0)
 
     quest4_starter_kit_path: Path = Path(DEFAULT_STARTER_KIT_PATH)
@@ -64,12 +65,7 @@ class Settings(BaseModel):
 
 
 def load_settings(env_file: str | Path | None = ".env") -> Settings:
-    """Build Settings from the environment, optionally loading a .env file first.
-
-    Unset variables keep model defaults; pydantic performs type coercion and
-    validation, so a malformed value (e.g. a non-numeric retry count) raises
-    a ValidationError instead of silently misbehaving.
-    """
+    """Build Settings from environment variables, optionally loading `.env`."""
     if env_file is not None:
         load_dotenv(env_file, override=False)
 
