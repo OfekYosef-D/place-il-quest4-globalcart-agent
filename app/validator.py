@@ -70,10 +70,19 @@ _TIMELINE_CONTEXT_TERMS = (
     "appear",
 )
 
-#: Phrases that assert a specific operational timeline.
-#: Catches "within 3-5 business days", "within a few business days", etc.
+#: Phrases that assert a specific duration.
 _TIMELINE_RE = re.compile(
     r"\b(within|in)\b[^.!?;\n]*?\b(?:\d+(?:[-–]\d+)?\s+|a\s+few\s+)?(?:business\s+)?(?:days?|hours?|weeks?)\b",
+    re.IGNORECASE,
+)
+
+#: A duration is an operational promise only when the sentence also predicts
+#: an operational event. This prevents policy-window statements such as
+#: "refund requests are allowed within 30 days" from being mistaken for a
+#: settlement/shipping promise, while still catching "the refund will appear
+#: within 3-5 business days".
+_OPERATIONAL_TIMELINE_PREDICATE_RE = re.compile(
+    r"\b(?:will|should|expected\s+to|takes?|processed|completed|issued|credited|settled|arrive|appear|receive)\b",
     re.IGNORECASE,
 )
 
@@ -402,8 +411,9 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
 
     # Operational timelines (refund settlement, payment processing, shipping,
     # delivery) must be grounded in trusted tool output for the relevant
-    # reported case(s). The supplied tools never provide these timelines, so
-    # unsupported claims are rejected with UNSUPPORTED_TIMELINE_CLAIM.
+    # reported case(s). A policy eligibility/window statement is not an
+    # operational promise, so duration text is checked only when the sentence
+    # also predicts an operational event.
     reported_order_ids = {case.order_id for case in result.action_taken.cases}
     for sentence in _SENTENCE_SPLIT_RE.split(response):
         timeline_match = _TIMELINE_RE.search(sentence)
@@ -411,6 +421,8 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
             continue
         lowered_sentence = sentence.lower()
         if not any(term in lowered_sentence for term in _TIMELINE_CONTEXT_TERMS):
+            continue
+        if not _OPERATIONAL_TIMELINE_PREDICATE_RE.search(sentence):
             continue
         phrase = timeline_match.group(0).strip().lower()
 
