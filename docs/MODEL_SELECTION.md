@@ -23,9 +23,9 @@ External leaderboards are context only. The release decision for this project co
 
 ## Previous Groq / GPT-OSS evidence
 
-The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. The aggregate matrix was contaminated by Groq daily token-limit `429` responses and therefore must not be presented as clean model accuracy.
+The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. The aggregate matrix was contaminated by provider rate-limit responses and therefore must not be presented as clean model accuracy.
 
-The genuine pre-quota failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). Source review showed the system prompt had not stated the requested-amount semantics explicitly. The runtime/tools behaved as implemented; the prompt/eval contract was incomplete.
+The genuine pre-limit failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). Source review showed the system prompt had not stated the requested-amount semantics explicitly. The runtime/tools behaved as implemented; the prompt/eval contract was incomplete.
 
 That gap is now hardened model-independently:
 
@@ -46,9 +46,10 @@ The next candidate is:
 
 Why this candidate is worth testing:
 
-- the current OpenRouter model page advertises tool calling and `response_format` support for this model;
-- OpenRouter exposes multiple inference backends for the same model and can restrict routing to endpoints that support requested parameters via `provider.require_parameters=true`;
-- current tau-bench/OpenRouter benchmark evidence makes Qwen3.5-397B-A17B a materially more relevant agentic candidate than choosing another model from size/reputation alone.
+- the current OpenRouter model page advertises both `tools` and `response_format` for `qwen/qwen3.5-397b-a17b`;
+- OpenRouter standardizes the OpenAI-compatible tool-call loop across tool-capable models;
+- `provider.require_parameters=true` restricts routing to inference endpoints that advertise support for the parameters requested by the adapter;
+- current tau-bench/OpenRouter evidence makes this a materially more relevant agentic candidate than selecting another model from size or reputation alone.
 
 Official references checked 2026-08-20:
 
@@ -56,6 +57,7 @@ Official references checked 2026-08-20:
 - https://openrouter.ai/qwen/qwen3.5-397b-a17b/providers
 - https://openrouter.ai/docs/guides/routing/provider-selection
 - https://openrouter.ai/docs/features/tool-calling
+- https://openrouter.ai/docs/features/structured-outputs
 - https://taubench.com/
 
 ## Provider architecture
@@ -74,7 +76,9 @@ GroqProvider OpenRouterProvider
 
 Both adapters normalize into the same `ModelResponse`. OpenAI-compatible wire conversion is shared in one small helper module rather than duplicated between adapters. API keys remain provider-specific environment variables and never enter the agent loop.
 
-The final-output contract is also provider-neutral: providers may accept an optional JSON Schema for no-tools structured responses. The existing deterministic parser and validator remain authoritative even when a provider offers native schema enforcement.
+The final-output contract is provider-neutral. `SchemaBoundProvider` binds the Pydantic-derived `AgentResult` JSON Schema only when the selected adapter/model route has an explicitly verified capability to combine tool use with structured output. For the active OpenRouter/Qwen candidate, normal autonomous calls therefore keep tools available while constraining final content. For Groq, normal tool calls remain unchanged because its documented Structured Outputs path cannot be combined with tools; supported no-tools repair calls may still use the schema. The deterministic parser and validator remain the final consistency/safety boundary in both cases.
+
+This is deliberately capability-based rather than assuming every OpenRouter model supports the same parameters. Adding another model to structured tool mode requires verifying its current OpenRouter capabilities first.
 
 ## What is intentionally not claimed yet
 
