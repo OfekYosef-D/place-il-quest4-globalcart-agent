@@ -5,10 +5,6 @@ correction pass. The correction exchange lives entirely in an ephemeral copy
 of the conversation: it is never appended to `state.messages` or any
 conversation memory, it calls the provider with `tools=None`, and only an
 accepted corrected `AgentResult` enters the run outcome.
-
-Per the approved execution clarifications, the internal `ModelAssessment`
-(sentiment/urgency) is captured from a repaired output exactly as it is for
-a directly valid final output.
 """
 
 from __future__ import annotations
@@ -20,7 +16,12 @@ from typing import Callable
 from app.llm.base import LLMProvider, ModelResponse
 from app.llm.retry import generate_with_retry
 from app.messages import CanonicalMessage, Message
-from app.output_parser import ModelAssessment, OutputParseError, parse_final_output
+from app.output_parser import (
+    ModelAssessment,
+    OutputParseError,
+    final_output_json_schema,
+    parse_final_output,
+)
 from app.schemas import AgentResult
 
 
@@ -30,12 +31,7 @@ class RepairFailed(RuntimeError):
 
 @dataclass
 class RepairOutcome:
-    """Accepted repair result plus the real model-call metadata.
-
-    The repair call is a real LLM call: its provider/model/latency/token/
-    retry metadata must reach the run trace and summary exactly like any
-    other model call.
-    """
+    """Accepted repair result plus the real model-call metadata."""
 
     result: AgentResult
     assessment: ModelAssessment
@@ -55,26 +51,32 @@ def repair_final_output(
 ) -> RepairOutcome:
     """Run exactly one no-new-tools correction pass.
 
-    Builds an ephemeral copy of `run_messages` plus one correction
-    instruction; the caller's list is never mutated. Transient provider
-    failures are retried per policy inside this single attempt; anything
-    still invalid raises `RepairFailed`.
+    Providers that support native JSON Schema receive the final-response
+    contract here. Providers without that capability retain the existing
+    prompt-only repair behavior, so the runtime remains provider-agnostic.
     """
     repair_messages: list[Message] = list(run_messages)
     repair_messages.append(
         CanonicalMessage(role="user", content=_correction_instruction(failed_content, errors))
     )
 
+    response_schema = (
+        final_output_json_schema()
+        if getattr(provider, "supports_response_schema", False)
+        else None
+    )
+
     try:
         response, attempts = generate_with_retry(
             provider,
             repair_messages,
-            None,  # repair never allows tool calls
+            None,
+            response_schema=response_schema,
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
             sleep=sleep,
         )
-    except Exception as exc:  # exhausted transients and non-transient both fail closed
+    except Exception as exc:
         raise RepairFailed(f"Repair call failed: {exc}") from exc
 
     if response.tool_calls:
