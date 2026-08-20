@@ -1,32 +1,21 @@
-"""Groq provider over the OpenAI-compatible chat completions API (spec section 6).
-
-Knows only how to call one provider and normalize the result into
-`ModelResponse`, including converting canonical tool/message schemas and the
-provider-neutral final-response schema into Groq's wire format.
-"""
+"""Groq adapter over its OpenAI-compatible chat-completions API."""
 
 from __future__ import annotations
 
 import copy
-import json
 import time
 from typing import Any
 
 import openai
 
 from app.config import Settings
-from app.llm.base import (
-    ModelResponse,
-    ToolCallRequest,
-    TransientLLMFailure,
-    ensure_unique_tool_call_ids,
+from app.llm.base import ModelResponse, TransientLLMFailure
+from app.llm.openai_compat import (
+    normalize_response,
+    to_openai_function_tools,
+    to_wire_messages,
 )
-from app.messages import (
-    AssistantToolCallMessage,
-    CanonicalMessage,
-    Message,
-    ToolObservationMessage,
-)
+from app.messages import Message
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
@@ -38,39 +27,14 @@ _TRANSIENT_ERRORS = (
 )
 
 # Groq's current strict Structured Outputs documentation lists these model IDs.
-# Keep provider capabilities explicit rather than assuming every Groq model can
-# accept `json_schema` with strict constrained decoding.
+# Keep capabilities explicit rather than assuming every hosted model supports it.
 _GROQ_STRICT_SCHEMA_MODELS = frozenset(
     {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
 )
 
 
-def to_openai_function_tools(
-    schemas: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Convert canonical Anthropic-shaped tool schemas to OpenAI function format."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": schema["name"],
-                "description": schema.get("description", ""),
-                "parameters": copy.deepcopy(schema["input_schema"]),
-            },
-        }
-        for schema in schemas
-    ]
-
-
 def to_groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Convert provider-neutral JSON Schema to Groq strict-mode requirements.
-
-    Groq strict Structured Outputs require every object property to be listed
-    in `required` and every object to be closed with `additionalProperties:
-    false`. Pydantic represents optional fields as nullable schemas that may be
-    omitted, so at the provider boundary we require those nullable fields to be
-    present (possibly as null) without changing the runtime/Pydantic contract.
-    """
+    """Convert provider-neutral JSON Schema to Groq strict-mode requirements."""
 
     def normalize(node: Any) -> Any:
         if isinstance(node, list):
@@ -92,99 +56,8 @@ def to_groq_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return normalize(copy.deepcopy(schema))
 
 
-def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert canonical conversation messages to OpenAI-compatible wire dicts."""
-    wire: list[dict[str, Any]] = []
-    for message in messages:
-        if isinstance(message, CanonicalMessage):
-            wire.append({"role": message.role, "content": message.content})
-        elif isinstance(message, AssistantToolCallMessage):
-            missing = [tc.name for tc in message.tool_calls if not tc.id]
-            if missing:
-                raise ValueError(
-                    "AssistantToolCallMessage contains tool calls without "
-                    f"ids ({', '.join(missing)}); ids are guaranteed at the "
-                    "provider boundary and must be preserved end-to-end."
-                )
-            wire.append(
-                {
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in message.tool_calls
-                    ],
-                }
-            )
-        elif isinstance(message, ToolObservationMessage):
-            if not message.tool_call_id:
-                raise ValueError(
-                    "ToolObservationMessage is missing tool_call_id; observation "
-                    "correlation must never fall back to an ambiguous placeholder."
-                )
-            wire.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": message.tool_call_id,
-                    "content": message.content,
-                }
-            )
-        else:
-            raise TypeError(f"Unsupported canonical message type: {type(message)!r}")
-    return wire
-
-
-def normalize_response(
-    raw: Any, *, provider: str, fallback_model: str, latency_ms: float
-) -> ModelResponse:
-    """Convert a raw chat-completion object into the normalized contract."""
-    message = raw.choices[0].message
-
-    tool_calls: list[ToolCallRequest] = []
-    for tc in getattr(message, "tool_calls", None) or []:
-        raw_args = tc.function.arguments or ""
-        parsed: Any = None
-        try:
-            parsed = json.loads(raw_args) if raw_args else {}
-        except json.JSONDecodeError:
-            parsed = None
-        if not isinstance(parsed, dict):
-            parsed = None
-        tool_calls.append(
-            ToolCallRequest(
-                id=getattr(tc, "id", None),
-                name=tc.function.name,
-                arguments=parsed if parsed is not None else {},
-                raw_arguments=raw_args if parsed is None and raw_args else None,
-            )
-        )
-
-    usage = getattr(raw, "usage", None)
-    raw_usage = usage.model_dump() if usage is not None and hasattr(usage, "model_dump") else None
-
-    response = ModelResponse(
-        content=getattr(message, "content", None),
-        tool_calls=tool_calls,
-        provider=provider,
-        model=getattr(raw, "model", None) or fallback_model,
-        input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
-        output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
-        total_tokens=getattr(usage, "total_tokens", None) if usage else None,
-        latency_ms=latency_ms,
-        raw_usage=raw_usage,
-    )
-    return ensure_unique_tool_call_ids(response)
-
-
 class GroqProvider:
-    """Thin OpenAI-compatible client pointed at Groq."""
+    """Thin Groq client preserving the provider-neutral runtime contract."""
 
     supports_response_schema: bool
 
@@ -210,11 +83,10 @@ class GroqProvider:
         *,
         response_schema: dict[str, Any] | None = None,
     ) -> ModelResponse:
-        """Call Groq using provider-owned wire-format translation.
+        """Call Groq using provider-owned request features.
 
-        Groq documents Structured Outputs as incompatible with tool use. Strict
-        schema mode is also model-specific, so unsupported model IDs fail fast
-        instead of sending a request that Groq would reject.
+        Groq documents Structured Outputs as incompatible with tool use, so a
+        schema-constrained call is accepted only when no tools are exposed.
         """
         if response_schema is not None and tools:
             raise ValueError("response_schema requires tools=None")
