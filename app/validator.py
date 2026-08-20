@@ -31,6 +31,12 @@ REFUND_SUCCESS_PHRASES = (
     "refunds are approved",
 )
 
+#: Negation immediately preceding a success phrase means the sentence denies
+#: success ("no refund has been issued") rather than claiming it.
+_NEGATION_BEFORE_SUCCESS_RE = re.compile(
+    r"\b(?:no|not|never)\b(?:\s+\w+){0,3}\s*$", re.IGNORECASE
+)
+
 #: Narrow deterministic disclosure patterns for internal risk/profile signals
 #: (GUARDRAILS section 4.1). Deliberately not a generic moderation system.
 DISCLOSURE_PATTERNS = tuple(
@@ -346,28 +352,40 @@ def _approved_reported_orders(result: AgentResult, state: AgentState) -> set[str
     }
 
 
+def _sentence_claims_refund_success(sentence: str) -> bool:
+    """True only for affirmative refund-success wording, not explicit denial."""
+    lowered = sentence.lower()
+    for phrase in REFUND_SUCCESS_PHRASES:
+        start = lowered.find(phrase)
+        while start != -1:
+            prefix = lowered[max(0, start - 32) : start]
+            if not _NEGATION_BEFORE_SUCCESS_RE.search(prefix):
+                return True
+            start = lowered.find(phrase, start + 1)
+    return False
+
+
 def _validate_customer_response(result: AgentResult, state: AgentState) -> list[str]:
     issues: list[str] = []
     response = result.customer_response
-    lowered_response = response.lower()
     approved_orders = _approved_reported_orders(result, state)
+    sentences = _SENTENCE_SPLIT_RE.split(response)
 
     # Generic refund-success wording must be grounded in a case represented by
-    # this AgentResult. An approval from an unrelated earlier turn cannot make
-    # a false current-turn claim valid. If a prior order is intentionally
-    # reported again, its cumulative trusted evidence remains usable here.
+    # this AgentResult. Explicit denials such as "No refund has been issued"
+    # are safe and must never be misclassified as success.
     if not approved_orders and any(
-        phrase in lowered_response for phrase in REFUND_SUCCESS_PHRASES
+        _sentence_claims_refund_success(sentence) for sentence in sentences
     ):
         issues.append(
             "customer_response claims a refund succeeded without a trusted APPROVED "
             "result for any case reported in the current AgentResult."
         )
 
-    for sentence in _SENTENCE_SPLIT_RE.split(response):
-        lowered = sentence.lower()
-        if not any(phrase in lowered for phrase in REFUND_SUCCESS_PHRASES):
+    for sentence in sentences:
+        if not _sentence_claims_refund_success(sentence):
             continue
+        lowered = sentence.lower()
 
         # A success phrase explicitly tied to an order id needs that same
         # reported order to have trusted APPROVED evidence.
@@ -415,7 +433,7 @@ def _validate_customer_response(result: AgentResult, state: AgentState) -> list[
     # operational promise, so duration text is checked only when the sentence
     # also predicts an operational event.
     reported_order_ids = {case.order_id for case in result.action_taken.cases}
-    for sentence in _SENTENCE_SPLIT_RE.split(response):
+    for sentence in sentences:
         timeline_match = _TIMELINE_RE.search(sentence)
         if not timeline_match:
             continue
