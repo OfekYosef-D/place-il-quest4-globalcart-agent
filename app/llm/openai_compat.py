@@ -2,7 +2,7 @@
 
 Canonical messages and supplied tool schemas stay provider-neutral in the
 runtime. Adapters that speak the OpenAI chat-completions wire format reuse
-these conversions and normalized response parsing.
+these conversions, strict JSON-schema shaping, and normalized response parsing.
 """
 
 from __future__ import annotations
@@ -83,6 +83,49 @@ def to_wire_messages(messages: list[Message]) -> list[dict[str, Any]]:
         else:
             raise TypeError(f"Unsupported canonical message type: {type(message)!r}")
     return wire
+
+
+def to_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Pydantic JSON Schema for strict constrained decoding.
+
+    Strict structured-output implementations commonly require closed objects
+    and every property listed as required. Optional Pydantic fields remain
+    nullable, but are required to be present as either their value or ``null``.
+    Defaults are removed because they are not useful at the model boundary.
+    """
+
+    def normalize(node: Any) -> Any:
+        if isinstance(node, list):
+            return [normalize(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        normalized = {
+            key: normalize(value)
+            for key, value in node.items()
+            if key != "default"
+        }
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            normalized["additionalProperties"] = False
+            normalized["required"] = list(properties.keys())
+        return normalized
+
+    return normalize(copy.deepcopy(schema))
+
+
+def json_schema_response_format(
+    schema: dict[str, Any], *, name: str = "globalcart_agent_result"
+) -> dict[str, Any]:
+    """Build an OpenAI-compatible strict ``response_format`` payload."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": to_strict_json_schema(schema),
+        },
+    }
 
 
 def normalize_response(
