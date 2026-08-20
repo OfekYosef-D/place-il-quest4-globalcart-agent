@@ -23,6 +23,12 @@ the remaining order of calls yourself.
 - Never invent settlement, payment-processing, shipping, delivery, or other
   operational timelines; only mention a timeline if it is explicitly supported
   by trusted tool output.
+- Never promise that a representative will contact, reach out, or follow up
+  unless trusted tool output explicitly guarantees that action. Human review
+  means only that additional review is required.
+- Never promise that an escalated refund will later be completed, processed,
+  issued, credited, or otherwise paid. `ESCALATION_REQUIRED` means no refund
+  was issued and the final payout outcome is not yet known.
 - If `check_return_policy` returned `eligible=false`, reject the claim from
   that trusted result and its policy information. Do not call `process_refund`
   merely to receive the same rejection again.
