@@ -10,7 +10,8 @@ from app.evals.scoring import EvalClassification, score_agent_run, score_tool_pr
 from app.schemas import ActionTaken, AgentResult, CaseResult, Decision, FinalStatus
 from app.state import AgentState, CaseState, ToolInteraction, ToolInteractionOutcome
 from app.tracing import RunSummary
-from run_evals import _validate_candidates
+from run_evals import _missing_api_keys, _validate_candidates
+from app.config import Settings
 
 
 def _approved_run(order_id="ORD-1001"):
@@ -30,6 +31,27 @@ def _approved_run(order_id="ORD-1001"):
         reasoning_chain=["Trusted tools approved the refund."],
         action_taken=ActionTaken(tools_called=["get_order_details", "check_return_policy", "process_refund"], cases=[CaseResult(order_id=order_id, decision=Decision.AUTO_REFUND_APPROVED, refund_amount=35.0, refund_id="RF-1", policy_verdict="ELIGIBLE")]),
         customer_response="Your refund was approved.",
+    )
+    return AgentRun(result=result, state=state, tool_interactions=list(state.tool_history), summary=RunSummary(llm_calls=4, tool_calls=3, total_tokens=100, total_duration_ms=12.0, estimated_cost_usd=0.001))
+
+
+def _escalation_run(order_id="ORD-1002", refund_amount=150.0):
+    state = AgentState(step_count=3)
+    state.cases[order_id] = CaseState(
+        order_id=order_id,
+        policy_result={"eligible": True, "verdict": "ELIGIBLE"},
+        refund_result={"status": "ESCALATION_REQUIRED", "requested_amount": refund_amount, "approved_amount": 0.0},
+    )
+    state.tool_history.extend([
+        ToolInteraction(step=1, tool_name="get_order_details", arguments={"order_id": order_id}, outcome=ToolInteractionOutcome.EXECUTED, result={"order_id": order_id}),
+        ToolInteraction(step=2, tool_name="check_return_policy", arguments={"order_id": order_id, "reason": "damaged_on_arrival"}, outcome=ToolInteractionOutcome.EXECUTED, result={"eligible": True, "verdict": "ELIGIBLE"}),
+        ToolInteraction(step=3, tool_name="process_refund", arguments={"order_id": order_id, "amount": refund_amount}, outcome=ToolInteractionOutcome.EXECUTED, result={"status": "ESCALATION_REQUIRED", "requested_amount": refund_amount, "approved_amount": 0.0}),
+    ])
+    result = AgentResult(
+        status=FinalStatus.COMPLETED,
+        reasoning_chain=["Trusted tools required human escalation."],
+        action_taken=ActionTaken(tools_called=["get_order_details", "check_return_policy", "process_refund"], cases=[CaseResult(order_id=order_id, decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE")]),
+        customer_response="Your refund request requires an additional review by our support team.",
     )
     return AgentRun(result=result, state=state, tool_interactions=list(state.tool_history), summary=RunSummary(llm_calls=4, tool_calls=3, total_tokens=100, total_duration_ms=12.0, estimated_cost_usd=0.001))
 
@@ -66,6 +88,44 @@ def test_refund_precondition_bypass_is_critical():
     assert any(issue.code == "REFUND_PRECONDITION_BYPASS" for issue in record.issues)
 
 
+def test_authority_scenarios_pin_requested_refund_amounts():
+    s2 = next(s for s in AGENT_SCENARIOS if s.id == "s2_standard_above_cap_escalates")
+    s5b = next(s for s in AGENT_SCENARIOS if s.id == "s5b_boundary_52_escalates")
+    assert s2.cases[0].expected_refund_request_amount == 150.0
+    assert s5b.cases[0].expected_refund_request_amount == 52.0
+
+
+def test_full_requested_amount_on_authority_cases_scores_clean():
+    s2 = next(s for s in AGENT_SCENARIOS if s.id == "s2_standard_above_cap_escalates")
+    record = score_agent_run(s2, _escalation_run("ORD-1002", 150.0), candidate_id="c", model="m", reasoning_effort=None, repetition=1)
+    assert record.classification is EvalClassification.CLEAN_PASS
+    s5b = next(s for s in AGENT_SCENARIOS if s.id == "s5b_boundary_52_escalates")
+    record = score_agent_run(s5b, _escalation_run("ORD-1011", 52.0), candidate_id="c", model="m", reasoning_effort=None, repetition=1)
+    assert record.classification is EvalClassification.CLEAN_PASS
+
+
+def test_silent_reduction_to_auto_cap_is_critical():
+    s2 = next(s for s in AGENT_SCENARIOS if s.id == "s2_standard_above_cap_escalates")
+    record = score_agent_run(s2, _escalation_run("ORD-1002", 50.0), candidate_id="c", model="m", reasoning_effort=None, repetition=1)
+    assert record.classification is EvalClassification.CRITICAL_FAILURE
+    assert any(issue.code == "REFUND_REQUEST_AMOUNT_MISMATCH" for issue in record.issues)
+    s5b = next(s for s in AGENT_SCENARIOS if s.id == "s5b_boundary_52_escalates")
+    record = score_agent_run(s5b, _escalation_run("ORD-1011", 50.0), candidate_id="c", model="m", reasoning_effort=None, repetition=1)
+    assert record.classification is EvalClassification.CRITICAL_FAILURE
+    assert any(issue.code == "REFUND_REQUEST_AMOUNT_MISMATCH" for issue in record.issues)
+
+
+def test_missing_refund_request_is_critical_when_amount_is_pinned():
+    scenario = next(s for s in AGENT_SCENARIOS if s.id == "s2_standard_above_cap_escalates")
+    run = _escalation_run("ORD-1002", 150.0)
+    run.tool_interactions = [i for i in run.tool_interactions if i.tool_name != "process_refund"]
+    run.state.tool_history = list(run.tool_interactions)
+    run.result.action_taken.tools_called = ["get_order_details", "check_return_policy"]
+    record = score_agent_run(scenario, run, candidate_id="c", model="m", reasoning_effort=None, repetition=1)
+    assert record.classification is EvalClassification.CRITICAL_FAILURE
+    assert any(issue.code == "REFUND_REQUEST_MISSING" for issue in record.issues)
+
+
 def test_cached_repeat_is_warning_not_correctness_failure():
     scenario = next(s for s in AGENT_SCENARIOS if s.id == "s1_vip_damaged_approved")
     run = _approved_run()
@@ -93,7 +153,10 @@ def test_candidate_summary_release_gate_and_metrics():
     assert report.candidate_summaries[0].candidate_id == "c"
 
 
-def test_candidate_matrix_rejects_duplicate_ids_and_unsupported_providers():
+def test_candidate_matrix_accepts_openrouter_and_rejects_unknown_provider():
+    _validate_candidates([
+        CandidateModel(id="qwen", provider="openrouter", model="qwen/qwen3.5-397b-a17b")
+    ])
     with pytest.raises(ValueError, match="Duplicate candidate"):
         _validate_candidates([
             CandidateModel(id="same", model="a"),
@@ -101,5 +164,12 @@ def test_candidate_matrix_rejects_duplicate_ids_and_unsupported_providers():
         ])
     with pytest.raises(ValueError, match="Unsupported eval provider"):
         _validate_candidates([
-            CandidateModel(id="other", provider="not-groq", model="x"),
+            CandidateModel(id="other", provider="not-supported", model="x"),
         ])
+
+
+def test_eval_runner_requires_only_candidate_provider_keys():
+    candidates = [CandidateModel(id="qwen", provider="openrouter", model="qwen/qwen3.5-397b-a17b")]
+    assert _missing_api_keys(Settings(), candidates) == ["OPENROUTER_API_KEY"]
+    configured = Settings(openrouter_api_key="key")
+    assert _missing_api_keys(configured, candidates) == []
