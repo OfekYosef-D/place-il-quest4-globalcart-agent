@@ -34,7 +34,7 @@ python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scen
 python run_evals.py --dry-run
 ```
 
-Current post-review result:
+Final post-review deterministic result:
 
 ```text
 project tests:        215 passed
@@ -52,14 +52,28 @@ Run exactly one complete live catalog after the deterministic gate is green:
 python run_evals.py --repetitions 1
 ```
 
-A submission candidate passes only if:
+The final post-review run at runtime commit:
 
 ```text
-critical failures = 0
-release gate = PASS
+385e307e3526cc906bddf3675d2677da6c4a480c
 ```
 
-Warnings may record bounded repair or harmless efficiency behavior. They must never be used to hide a wrong decision, hallucinated case, incorrect refund amount, refund-precondition bypass, runtime failure, or uncontrolled loop.
+passed the submission gate:
+
+```text
+10/10 CLEAN_PASS
+0 warnings
+0 critical failures
+release gate = PASS
+5/5 Scenario 8 probes CLEAN_PASS
+repair rate = 0%
+average duration = 15.06 s
+average total tokens = 9,912.5
+average tool calls = 3.0
+max passing steps = 4
+```
+
+Warnings are allowed only for bounded repair or harmless efficiency behavior; this final run had none. A warning can never be used to hide a wrong decision, hallucinated case, incorrect refund amount, refund-precondition bypass, runtime failure, or uncontrolled loop.
 
 ## 4. What the scorer verifies
 
@@ -122,7 +136,20 @@ release gate PASS
 repair rate 0%
 ```
 
-Automated review then found the clarification-path gap described above. The current runtime contains that fix and has a green deterministic gate; a fresh live catalog is intentionally required before final merge.
+### Final post-review submission run
+
+Commit `385e307e3526cc906bddf3675d2677da6c4a480c`:
+
+```text
+10/10 CLEAN_PASS
+0 warnings
+0 critical failures
+release gate PASS
+5/5 Scenario 8 probes CLEAN_PASS
+repair rate 0%
+```
+
+The final run validates the clarification-safety fix that followed automated review and is the authoritative submission evidence.
 
 ## 7. Manual CLI smokes
 
@@ -182,13 +209,13 @@ Restarting the process starts a new session by design.
 
 ## 9. Submission hygiene
 
-Before merge/submission confirm:
+Before submission confirm:
 
 - `.env` is not tracked;
 - `.vendor/` is not tracked;
 - `eval-results/` is not tracked;
 - no API keys or secret-looking values are committed;
 - no Place IL starter-kit source is copied into this repository;
-- CI is green on the final branch;
+- CI is green on the final branch/main;
 - the final live catalog reports zero critical failures;
 - the submission GitHub repository is public/readable by evaluators.

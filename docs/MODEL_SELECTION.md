@@ -87,7 +87,7 @@ max passing steps: 4
 
 This run selected OpenRouter/Qwen and specifically verified the authority-boundary amounts: `$150` and `$52` were passed in full and escalated rather than clipped.
 
-### Post-presentation live run
+### Post-terminal-renderer run
 
 After replacing phrase-specific terminal safety checks with deterministic localized rendering, a fresh run at commit:
 
@@ -114,7 +114,7 @@ The tenth entry is a project-owned Hebrew end-to-end Scenario 2 smoke. It reache
 
 ## Final review hardening
 
-After that live run, automated code review identified one nonterminal presentation gap: `NEEDS_CLARIFICATION` could bypass the terminal renderer and deliver unsafe free-form draft wording.
+Automated code review then identified one nonterminal presentation gap: `NEEDS_CLARIFICATION` could bypass the terminal renderer and deliver unsafe free-form draft wording.
 
 The fix follows the same architecture rather than adding phrase lists:
 
@@ -124,7 +124,39 @@ clarification decision by LLM
     -> deterministic clarification question from structural state
 ```
 
-Post-fix deterministic CI is green with 215 project tests, the supplied 33/33 verifier, and a valid eval dry-run. Because this is a runtime customer-presentation change, one final complete live run is required before merge/submission.
+Deterministic CI passed after the fix with 215 project tests, the supplied 33/33 verifier, and a valid eval dry-run.
+
+### Final submission run
+
+A fresh complete live run was then executed on the post-review runtime at:
+
+```text
+385e307e3526cc906bddf3675d2677da6c4a480c
+```
+
+Result:
+
+```text
+10/10 CLEAN_PASS
+0 warnings
+0 critical failures
+release gate: PASS
+5/5 Scenario 8 probes CLEAN_PASS
+repair rate: 0%
+average duration: 15.06 s
+average model latency: 15.06 s
+average total tokens: 9,912.5
+average tool calls: 3.0
+max passing steps: 4
+```
+
+The Hebrew smoke also passed cleanly and rendered:
+
+```text
+הזמנה ORD-1002: נדרשת בדיקה נוספת. לא בוצע החזר כספי.
+```
+
+This is the final runtime evidence used for submission readiness.
 
 ## Scope of claims
 
