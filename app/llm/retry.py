@@ -1,9 +1,9 @@
-"""Transient-only LLM retry policy (spec section 6, AGENTS.md loop discipline).
+"""Transient-only LLM retry policy.
 
 Retries only `TransientLLMFailure` with a short bounded backoff. Business
 errors are data and never reach this layer; configuration/auth/programmer
 failures propagate immediately and fail closed. The runtime owns the policy
-parameters; this module just executes it.
+parameters; this module just executes it. See docs/IMPLEMENTATION_SPEC.md.
 """
 
 from __future__ import annotations
