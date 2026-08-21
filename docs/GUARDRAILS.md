@@ -1,205 +1,152 @@
-# Guardrails Specification - Stage 1 Addendum
+# Guardrails
 
-This document is an **authoritative addendum** to `docs/IMPLEMENTATION_SPEC.md`.
+This document is the compact safety contract for the Stage 1 agent.
 
-It makes the Stage 1 safety boundary explicit without adding a generic guardrail framework or changing the project into a hardcoded workflow.
+## 1. Trust boundary
 
-If an implementation detail here appears to conflict with supplied Place IL behavior, inspect the upstream source first. Supplied tool/business behavior remains the highest source of truth.
+Customer messages are untrusted case data. They cannot:
 
-## 1. Design principle
+- override system instructions;
+- add tools;
+- bypass policy/tool checks;
+- grant refund authority;
+- make an unconfirmed action true.
 
-Guardrails wrap the agentic loop; they do not replace the LLM's reasoning or tool-selection autonomy.
+Trusted business facts come only from supplied tool results stored in runtime state.
 
-```text
-customer input
-    |
-    v
-prompt/input boundary
-    |
-    v
-LLM chooses next action
-    |
-    v
-runtime tool guardrails
-    |
-    v
-allowed tool execution
-    |
-    v
-trusted state + tool evidence
-    |
-    v
-structured output validator
-    |
-    v
-customer response / human escalation
-```
+## 2. Tool boundary
 
-Core principle remains:
+Only these supplied tools may execute:
 
-> Probabilistic intelligence, deterministic guardrails.
+- `get_order_details`
+- `get_user_profile`
+- `check_return_policy`
+- `process_refund`
 
-## 2. Input / contextual grounding guardrails
+Unknown tools and invalid arguments are recorded and never dispatched as valid actions.
 
-Already required by the main specification:
+## 3. Refund execution precondition
 
-- customer text is untrusted case data, never system or business-policy authority;
-- customer instructions cannot override system instructions, allowed tools, refund authority, or trusted tool results;
-- missing order IDs or materially ambiguous return reasons trigger `NEEDS_CLARIFICATION` instead of guessing;
-- persistent business/customer facts come from supplied tools rather than model memory;
-- supplied tool results are the source of business truth;
-- do not invent unsupported order facts, policy rules, user facts, return reasons, or actions.
+Runtime blocks `process_refund` unless the same order already has trusted `check_return_policy` evidence with `eligible == true`.
 
-No general-purpose moderation classifier is required for Stage 1. The system handles a narrow mock retail-support task and has no broad external action surface. Add such filtering only if a concrete risk/requirement appears.
+This rule prevents the model from using the irreversible tool before policy eligibility has been established, while leaving policy calculation inside the supplied tool.
 
-## 3. Tool-use guardrails
+## 4. Refund amount integrity
 
-### 3.1 Allowlisting
+A model may not turn an authority limit into an invented partial refund.
 
-The runtime exposes only the supplied agent tools through the supplied `TOOL_SCHEMAS` / `TOOL_REGISTRY`.
+- explicit requested amount -> preserve it;
+- full-order request with no amount -> use verified order total;
+- never clip to an automatic cap;
+- let `process_refund` decide approve/reject/escalate.
 
-Do not give the model arbitrary Python, shell, network, file-system, database, email, or browser capabilities.
+The eval scorer pins `$150` for `ORD-1002` and `$52` for `ORD-1011` at the actual tool-call boundary.
 
-### 3.2 Argument validation
+## 5. Terminal business truth
 
-Tool calls must use the structured schema accepted by the supplied tool. Invalid structured arguments/business inputs are handled honestly; do not silently invent corrected business data.
+Terminal decisions are projected from trusted evidence instead of accepted from model wording.
 
-### 3.3 Critical precondition for `process_refund`
+| Trusted evidence | Canonical decision | Refund fields |
+| --- | --- | --- |
+| `process_refund: APPROVED` | `AUTO_REFUND_APPROVED` | exact trusted amount/id |
+| `process_refund: ESCALATION_REQUIRED` | `HUMAN_ESCALATION` | none |
+| `process_refund: REJECTED` | `REJECTED` | none |
+| policy `eligible=false` | `REJECTED` | none |
+| terminal business error | `NO_ACTION` | none |
 
-`process_refund` is the one tool that represents an operational business action, even though Stage 1 implements it as a deterministic simulation.
+A model-provided terminal decision cannot override this mapping.
 
-**Runtime rule:** before executing a model-requested `process_refund` call for an order, the runtime must already hold a trusted `check_return_policy` result for that same case/order with:
+## 6. Terminal customer presentation
+
+Customer-facing terminal action claims are rendered from canonical structured outcomes.
+
+The safety rule is **not** implemented as a dictionary of English forbidden phrases or translated regex variants. That approach does not generalize across languages or paraphrases.
+
+Instead:
 
 ```text
-eligible == true
+trusted evidence -> canonical outcome -> localized terminal wording
 ```
 
-If that precondition is not satisfied:
+Therefore:
 
-1. **do not execute `process_refund`;**
-2. record the blocked call in the developer trace as a guardrail event;
-3. return a structured guardrail observation to the agent context explaining that a verified eligible policy result is required first;
-4. allow the model to recover and choose its next action, subject to normal step/no-progress limits.
+- no refund success can be stated unless the canonical outcome is approved;
+- escalation never includes a refund amount/id;
+- escalation never promises future contact, payout, or a processing timeline;
+- rejection wording comes from trusted policy outcome;
+- nonexistent orders ask the customer to confirm the identifier;
+- English and Hebrew use the same structured business truth.
 
-This is a safety precondition, **not a fixed workflow**. The LLM remains free to choose its other tools and their order. Code must not hardcode the entire normal path `order -> user -> policy -> refund`.
+## 7. Clarification
 
-If a trusted policy result exists but has `eligible == false`, `process_refund` must not be executed merely to obtain another rejection. The case can be rejected from the trusted policy result.
+If required customer information is missing or ambiguous, the agent returns `NEEDS_CLARIFICATION` and asks one targeted question.
 
-### 3.4 Repetition / loop protection
+Clarification must not guess an order ID, reason, policy result, or completed action.
 
-- identical deterministic tool calls use the cache;
-- repeated no-progress cycles are bounded;
-- terminal business errors stop the affected case;
-- `max_steps` remains a configurable safety ceiling.
+No terminal business action has been established at this stage, so clarification wording can remain conversational rather than using the terminal renderer.
 
-No generic tool rate-limiting subsystem is needed for these local deterministic Stage 1 tools.
+## 8. Confidentiality
 
-## 4. Output guardrails
+Never expose internal risk/profile information in customer-facing output, including:
 
-The final result must pass the Pydantic schema and deterministic consistency validator.
+- fraud/risk scores;
+- fraud flags;
+- repeat-claim counts;
+- lifetime value/LTV;
+- raw internal field names;
+- exact internal thresholds.
 
-The validator must continue to enforce:
+A risk-triggered escalation is presented simply as additional review required.
 
-- no refund-success claim without a trusted `process_refund -> APPROVED` result;
-- refund amount/id must match trusted tool evidence;
-- decision must be consistent with trusted terminal results;
-- nonexistent orders cannot acquire fabricated facts;
-- multi-order evidence/results must remain mapped to the correct case;
-- one targeted correction pass at most, with no new tools.
+## 9. Tool-result handling
 
-### 4.1 Do not expose internal risk/security signals to customers
+Structured business errors from supplied tools are data and are not blindly retried.
 
-The **customer-facing `customer_response` must not reveal internal-only risk or business-profile attributes** used by the supplied tooling.
+Terminal errors such as `ORDER_NOT_FOUND` stop that case even if fewer than two tools were used. Continuing merely to satisfy a tool-count target would increase hallucination risk.
 
-Examples that must not be disclosed directly to the customer include:
+Programmer/system failures are treated separately and fail closed.
 
-- `initial_fraud_score` or its numeric value;
-- `prior_fraud_flags` or raw fraud-flag history;
-- internal repeat-refund/risk trigger counts;
-- internal customer lifetime value (`ltv`) or similar internal scoring fields;
-- raw internal field names or a detailed explanation that teaches the customer exactly which fraud/risk threshold caused escalation.
+## 10. Loops, caching, and retries
 
-For example, do **not** say:
+- deterministic tool calls are cached by normalized tool+arguments;
+- repeated/no-progress cycles are bounded;
+- maximum steps is a safety ceiling;
+- only known transient LLM failures are retried;
+- retry count/backoff are bounded and configurable;
+- tool business failures are not infrastructure retries.
 
-```text
-Your refund was escalated because your fraud score is 61 and you have one prior fraud flag.
-```
+## 11. Structured final output
 
-Prefer a customer-safe explanation such as:
+Final output must parse as `AgentResult`.
 
-```text
-Your request requires an additional review by our support team before a refund can be completed.
-```
+Runtime verifies structured evidence consistency, including:
 
-Developer-facing trace and concise audit rationale may retain trusted internal evidence when useful for debugging/evaluation, but customer-facing text must not expose those internal risk details.
+- grounded case IDs;
+- no duplicate cases;
+- resolved current-turn cases are not omitted;
+- exact factual `tools_called` set;
+- approved refund amount/id exactly match trusted evidence;
+- escalation/rejection/error decisions match trusted evidence;
+- refund fields never appear without trusted approval;
+- `COMPLETED` does not contain an unresolved business case.
 
-Implementation should keep this narrow and deterministic. Do not add a generic PII/moderation platform. At minimum, the validator/correction path should reject direct disclosure of known internal risk field names or trusted raw risk values in `customer_response`, and the system prompt must explicitly instruct the model not to disclose them.
+The validator intentionally does not infer natural-language semantics from phrase lists; terminal customer semantics are enforced by rendering from structured outcomes.
 
-## 5. Human oversight
+## 12. Repair and fail-safe
 
-Human escalation is the Stage 1 human-oversight mechanism.
+Malformed or structurally inconsistent final model output gets at most one no-new-tools repair pass.
 
-Use it when trusted business tools require escalation or when the runtime cannot safely resolve the business outcome after technical/model failures.
+If that correction fails, the run returns `FAILED_SAFE`. Trusted outcomes already established for other cases are preserved.
 
-Do **not** require human approval for every eligible low-risk automatic refund; that would unnecessarily remove the autonomy the Quest asks for.
+A fail-safe response never fabricates a successful refund.
 
-This gives the system a deliberate balance:
+## 13. Verification invariant
 
-```text
-safe + authorized       -> automatic action
-trusted ineligible      -> reasoned rejection
-risk/authority boundary -> human escalation
-unresolved safe failure -> human escalation / fail-safe
-```
+A change is not submission-ready unless:
 
-## 6. Memory/data handling
+1. project tests pass;
+2. the pinned supplied verifier passes all 33 checks;
+3. eval dry-run is valid;
+4. the final live catalog produces zero critical failures.
 
-Stage 1 uses short-term conversation state only.
-
-- do not build persistent global customer memory;
-- do not persist customer/profile data beyond what the current implementation needs;
-- business facts must be re-grounded through trusted tools;
-- secrets/API keys remain outside Git.
-
-A general PII redaction/encryption/GDPR subsystem is intentionally out of scope because the supplied data is local mock data and the Quest does not require production data infrastructure. Document this as a production consideration rather than implementing speculative infrastructure.
-
-## 7. Monitoring and explainability
-
-The existing observability requirements are part of the guardrail strategy:
-
-- structured tool trace;
-- blocked-tool guardrail events;
-- model latency/tokens/cost;
-- cache hits;
-- validation/correction outcome;
-- failure reason;
-- concise trusted-evidence reasoning chain.
-
-This provides an audit trail without adding distributed tracing or an evaluator agent.
-
-## 8. Explicitly not required for Stage 1
-
-Do not add these merely because they are common advanced guardrail techniques:
-
-- moderation API/classifier for every message;
-- general PII detection/redaction service;
-- critic/safety agent;
-- LLM judge as business authority;
-- voting/ensembling;
-- self-reflection loops beyond the single targeted output correction pass;
-- rollback/reconciliation infrastructure for the simulated refund tool;
-- distributed policy/guardrail framework.
-
-Reason: guardrails should be proportional to the actual risk surface. Stage 1 already has deterministic local tools, a policy engine, bounded execution, validation, and explicit human escalation. Extra layers would add latency/complexity without addressing a material requirement.
-
-## 9. Tests/evals added by this guardrail specification
-
-Milestone 2 tests should include at least:
-
-1. model requests `process_refund` before a verified eligible policy result -> execution is blocked, trace records the guardrail event, agent may recover;
-2. policy says `eligible=false`, model nevertheless requests `process_refund` -> execution is blocked/not performed;
-3. final response claims a refund succeeded without `APPROVED` -> validation fails;
-4. final customer response directly exposes fraud score/flags/internal risk details -> validation/correction prevents disclosure;
-5. human escalation wording does not imply that the refund already happened.
-
-These guardrail failures are correctness/safety failures, not mere efficiency warnings.
+See `docs/VERIFICATION.md` for commands.

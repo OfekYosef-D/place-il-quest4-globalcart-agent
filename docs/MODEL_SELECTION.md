@@ -1,44 +1,31 @@
 # Model Selection Evidence
 
-Milestone 3 selects a runtime model from measured project behavior, not from model size or reputation alone.
+The release model is selected from measured GlobalCart behavior rather than model size or reputation.
 
 ## Release rule
 
-Reliability is the gate; efficiency is the tie-breaker.
+Reliability is the gate; efficiency is a secondary metric.
 
-A candidate is not release-eligible if the final evaluation contains a `CRITICAL_FAILURE`, including a wrong business decision, hallucinated case, false refund/action claim, silent requested-amount reduction, refund-precondition bypass, customer-facing internal risk disclosure, crash, or bounded-loop failure.
+A candidate is not release-eligible if a live evaluation contains a `CRITICAL_FAILURE`, including a wrong business decision, hallucinated case, silent requested-amount reduction, refund-precondition bypass, runtime failure, or uncontrolled loop.
 
-Among candidates that clear that gate, compare clean-pass stability, warnings, latency, tokens, tool/retry behavior, and cost when the price is actually pinned/measurable.
+There is no LLM judge for business correctness. The scorer uses expected scenario outcomes plus the trusted runtime/tool trace.
 
-Do not use an LLM judge as business authority.
+## Previous Groq evidence
 
-## External reference benchmarks
+The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. Provider rate limits contaminated the aggregate matrix, so it is not presented as clean accuracy evidence.
 
-Useful context for this problem shape:
+Useful pre-limit failures still exposed a real semantic issue: both models could reduce full-refund authority-boundary requests to the automatic cap (`$150 -> $50`, `$52 -> $50`). The project hardened that behavior model-independently:
 
-- Sierra Research `tau2-bench` / tau-bench: conversational agents operating under domain policy with tools, including retail/customer-service tasks: https://github.com/sierra-research/tau2-bench
-- Berkeley Function Calling Leaderboard (BFCL): function/tool-calling behavior, including multi-turn and agentic cases: https://github.com/ShishirPatil/gorilla
+- the system prompt preserves the requested/full amount;
+- the eval scorer pins `ORD-1002` to `150.0` and `ORD-1011` to `52.0` at the actual `process_refund` boundary;
+- a missing/reduced request is a critical failure;
+- terminal business outcomes are projected deterministically from trusted evidence.
 
-External leaderboards are context only. The release decision for this project comes from the local GlobalCart scenario suite because its tools, guardrails, and failure modes are the actual target.
+The 120B setup also showed additional protocol/timeline failures and was not kept as an active release candidate.
 
-## Previous Groq / GPT-OSS evidence
+## Selected Stage 1 path
 
-The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. The aggregate matrix was contaminated by provider rate-limit responses and therefore must not be presented as clean model accuracy.
-
-The genuine pre-limit failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). That behavior violated the supplied business contract because `process_refund` must receive the requested/full amount and decide whether to approve or escalate.
-
-That gap is now hardened model-independently:
-
-- the prompt prohibits invented/silent partial refunds and preserves the requested/full order amount;
-- eval scenarios pin `ORD-1002` to `150.0` and `ORD-1011` to `52.0` at the actual `process_refund` call boundary;
-- any reduction or missing required refund request is a critical eval failure;
-- terminal business outcomes are projected deterministically from trusted tool evidence.
-
-The 120B setup also produced additional genuine protocol/timeline failures, so it is not an active release candidate.
-
-## Selected release path
-
-Provider/gateway:
+Provider:
 
 ```text
 openrouter
@@ -50,18 +37,18 @@ Model:
 qwen/qwen3.5-397b-a17b
 ```
 
-Reasoning override: unset/provider default.
+Reasoning override: provider default.
 
-Configured per-million price: intentionally unset because OpenRouter can route the same model through multiple inference backends with different prices unless a backend is pinned.
+Per-million price is intentionally not pinned in the project because OpenRouter may route the same model through different inference backends with different current prices.
 
-Why this candidate was selected for the final Stage 1 submission path:
+Why this path was selected:
 
-- it exposes the required autonomous tool-calling behavior through the existing provider-neutral runtime;
-- OpenRouter exposes structured output for the selected model on no-tools calls, which is used only for the bounded repair path;
-- `provider.require_parameters=true` restricts routing to inference endpoints that advertise support for parameters requested by the adapter;
-- most importantly, the project-specific live GlobalCart suite passed with zero critical failures.
+- it supports the required autonomous tool-calling behavior;
+- it works through the provider-neutral runtime rather than a model-specific agent implementation;
+- structured output is available for the bounded no-tools repair path;
+- most importantly, the project-specific live GlobalCart suite passed with zero critical failures before the final presentation refactor.
 
-Official capability references checked 2026-08-20:
+Capability references checked 2026-08-20:
 
 - https://openrouter.ai/qwen/qwen3.5-397b-a17b
 - https://openrouter.ai/qwen/qwen3.5-397b-a17b/providers
@@ -70,8 +57,6 @@ Official capability references checked 2026-08-20:
 - https://openrouter.ai/docs/features/structured-outputs
 
 ## Provider architecture
-
-The runtime depends only on `LLMProvider`. Provider selection is configuration:
 
 ```text
 OperationsResolverAgent
@@ -83,21 +68,13 @@ OperationsResolverAgent
 GroqProvider OpenRouterProvider
 ```
 
-Both adapters normalize into the same `ModelResponse`. OpenAI-compatible wire conversion is shared in one small helper module rather than duplicated between adapters. API keys remain provider-specific environment variables and never enter the agent loop.
+Both adapters normalize into the same `ModelResponse`. OpenAI-compatible message/tool conversion is shared. API keys remain provider-specific environment configuration and never enter the agent loop.
 
-The final-output contract is provider-neutral:
+Normal autonomous calls keep tools available and do not depend on combining tool use with `response_format`. If a final structured draft needs the single repair pass, that no-tools call may use the Pydantic-derived JSON Schema on a supported provider/model route.
 
-- normal autonomous calls keep tools available;
-- normal tool calls do not combine tool use with `response_format`;
-- if final content is malformed or inconsistent, one no-new-tools repair call is allowed;
-- on a verified provider/model route, that repair call may request the Pydantic-derived `AgentResult` JSON Schema;
-- deterministic outcome projection and validation remain the business/safety authority regardless of provider-native schema support.
+## Measured OpenRouter/Qwen evidence
 
-This deliberately avoids depending on an unverified tools-plus-schema request shape.
-
-## Final live evidence
-
-A complete local catalog run was executed on **2026-08-21** at commit:
+A complete local nine-scenario catalog run was executed on 2026-08-21 at:
 
 ```text
 06b0286ddf8309dbfa668e24543393e7a6099024
@@ -109,7 +86,7 @@ Command:
 python run_evals.py --repetitions 1
 ```
 
-Observed candidate summary:
+Observed summary:
 
 ```text
 total agent runs:      9
@@ -124,34 +101,51 @@ average total tokens:  10,199
 average tool calls:    2.78
 repair rate:           22.2%
 max passing steps:     4
+Scenario 8 probes:     5/5 clean
 ```
 
-All five deterministic Scenario 8 bad-input/source-behavior probes were also `CLEAN_PASS`.
+The two warnings were `OUTPUT_REPAIR_USED` on Scenario 2 and Scenario 9. Both final business outcomes were correct and safe after the single bounded repair pass.
 
-The two warning runs were:
+Authority-boundary behavior was specifically verified:
 
-- `s2_standard_above_cap_escalates` -> `OUTPUT_REPAIR_USED`;
-- `s9_nonexistent_order_no_hallucination` -> `OUTPUT_REPAIR_USED`.
+- `ORD-1002` preserved the `$150` request and escalated instead of clipping to `$50`;
+- `ORD-1011` preserved the `$52` request and escalated instead of clipping to `$50`.
 
-Both remained correct and safe after the single targeted correction pass. There were no critical failures.
+## Presentation hardening after model selection
 
-The authority-boundary cases were specifically verified after the refund hardening:
+A later Hebrew manual smoke used the same Scenario 2 business case. The model correctly understood Hebrew, selected the correct tools, passed the full `$150` amount, and reached `ESCALATION_REQUIRED`, but its free-form Hebrew customer wording added an unsupported future-contact promise.
 
-- `ORD-1002` preserved the full `$150` request and escalated instead of clipping to `$50`;
-- `ORD-1011` preserved the full `$52` request and escalated instead of clipping to `$50`.
+That finding changed the architecture rather than creating a list of Hebrew forbidden phrases:
 
-A later targeted live smoke of the customer-facing guardrail changes produced `3/3 CLEAN_PASS` for Scenario 1, Scenario 5a, and Scenario 6 with no repairs.
+```text
+trusted tool evidence
+      -> deterministic terminal outcome
+      -> deterministic localized customer rendering
+```
 
-## Scope of the claim
+Terminal business claims no longer depend on parsing model prose for English/Hebrew semantic patterns. The eval catalog now contains ten live agent entries: the original nine plus a project-owned Hebrew end-to-end Scenario 2 smoke.
 
-The evidence supports selecting `openrouter/qwen/qwen3.5-397b-a17b` as the Stage 1 release path for this submission.
+## Current verification state
 
-The claim is intentionally narrow:
+On the post-presentation-refactor code path, CI is green:
 
-- one complete nine-scenario live catalog run passed with zero critical failures;
-- deterministic tests and the supplied 33-check verifier were green at the same code revision;
-- this is not a statistical stability claim across repeated live runs;
-- cost is not reported because the OpenRouter inference backend and price were not pinned;
-- OpenRouter routing can vary the underlying provider, so the measured latency/token result belongs to this observed run, not to every future route.
+```text
+project tests:       212 passed
+upstream verifier:   33/33 passed
+eval dry-run:        green (10 live scenarios + 5 tool probes)
+```
 
-Three repetitions remain optional if time/budget permits. They are not required to reinterpret or average away any systematic failure; if a future repeated run exposes a real correctness issue, that issue should be fixed rather than hidden by aggregation.
+The earlier 9/9 live result remains valid evidence for selecting OpenRouter/Qwen, but it is not reused as proof for the changed final runtime. One fresh full live run is the final submission gate:
+
+```bash
+python run_evals.py --repetitions 1
+```
+
+Release requires zero critical failures.
+
+## Scope of claims
+
+- The measured live result above is one complete catalog run, not a multi-repetition statistical-stability claim.
+- Cost is not claimed because the OpenRouter inference backend/price was not pinned.
+- OpenRouter routing can change underlying provider latency over time.
+- If the final post-refactor live run exposes a systematic correctness issue, it must be fixed rather than averaged away with repetitions.
