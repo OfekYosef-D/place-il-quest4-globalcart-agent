@@ -1,8 +1,8 @@
 # GlobalCart Operations Resolver Agent - Place IL Quest 4 Stage 1
 
-Status: **Core runtime, guardrails, OpenRouter provider path, deterministic tests, and eval harness are implemented. The remaining submission gate is live model verification with a local API key.**
+Status: **submission candidate**. The deterministic gate is green, and a full live OpenRouter/Qwen catalog run at commit `06b0286ddf8309dbfa668e24543393e7a6099024` passed all nine agent scenarios with zero critical failures. See **Live evaluation evidence** below for the exact scope and caveats.
 
-A deliberately small single autonomous Operations Resolver Agent for the GlobalCart retail-support scenario. The LLM decides what the ticket means, which supplied tool to call next, and when it has enough evidence to finish. Deterministic Python code owns tool execution, trusted state, safety guardrails, validation, bounded loops, and fail-safe behavior.
+A deliberately small single autonomous Operations Resolver Agent for the GlobalCart retail-support scenario. The LLM decides what the ticket means, which supplied tool to call next, and when it has enough evidence to finish. Deterministic Python code owns tool execution, trusted state, irreversible business outcomes, safety guardrails, validation, bounded loops, and fail-safe behavior.
 
 > **Probabilistic intelligence, deterministic guardrails.**
 
@@ -15,7 +15,7 @@ Customer / CLI
 OperationsResolverAgent
       |
       +--> provider-neutral LLMProvider
-      |       +--> OpenRouterProvider  (active eval path)
+      |       +--> OpenRouterProvider  (active release path)
       |       `--> GroqProvider        (alternate adapter)
       |
       +--> typed AgentState / CaseState
@@ -23,10 +23,14 @@ OperationsResolverAgent
       +--> supplied TOOL_SCHEMAS + TOOL_REGISTRY
       |       `--> guarded ToolExecutor + deterministic cache
       |
+      +--> deterministic outcome projection
+      |       `--> trusted tool evidence -> canonical CaseResult
+      |
       +--> structured final-output contract
-      |       `--> Pydantic AgentResult JSON Schema when supported
+      |       `--> Pydantic AgentResult validation
       |
       +--> one targeted no-new-tools repair pass
+      |       `--> native JSON Schema when the provider/model supports it
       |
       +--> deterministic consistency validator
       |
@@ -35,7 +39,30 @@ OperationsResolverAgent
 Structured AgentResult
 ```
 
-There is no hardcoded `order -> user -> policy -> refund` workflow. The model chooses the next action. Runtime code enforces only safety and consistency boundaries.
+There is no hardcoded `order -> user -> policy -> refund` workflow. The model chooses the next action. Runtime code enforces safety and consistency boundaries and deterministically projects terminal business truth once supplied tools have resolved a case.
+
+## Authority boundary
+
+The model owns:
+
+- understanding the customer request;
+- choosing which supplied tool to call next;
+- tool ordering;
+- deciding when more customer clarification is needed;
+- customer-facing wording.
+
+Deterministic runtime code owns:
+
+- tool execution and caching;
+- trusted state;
+- refund preconditions;
+- canonical terminal outcomes from trusted tool evidence;
+- refund amount/id facts;
+- loop and retry bounds;
+- final consistency validation;
+- fail-safe behavior.
+
+For example, once `process_refund` returns `ESCALATION_REQUIRED`, the runtime projects `HUMAN_ESCALATION` with no refund amount/id. The model does not get to reinterpret that business fact.
 
 ## Business and safety boundaries
 
@@ -46,15 +73,16 @@ Important Stage 1 rules enforced by the design:
 - only the four supplied tools are exposed;
 - `process_refund` is blocked unless the same order already has trusted `check_return_policy -> eligible=true` evidence;
 - `eligible=true` does not mean a refund happened; only `process_refund` determines the operational result;
-- the agent must preserve a customer's requested/full refund amount and must never silently reduce it to an automatic-authority cap;
+- the agent preserves a customer's requested/full refund amount and never silently reduces it to an automatic-authority cap;
 - `auto_refund_cap_usd` / `max_refundable_amount` describe authority, not permission to invent a partial refund;
 - ineligible policy results terminate without calling `process_refund` merely to obtain another rejection;
 - `ORDER_NOT_FOUND` terminates that case without fabricated order facts;
+- trusted `APPROVED`, `ESCALATION_REQUIRED`, `REJECTED`, ineligible-policy, and terminal-error outcomes are projected deterministically into the final case result;
 - refund-success language is rejected unless trusted `process_refund` returned `APPROVED`;
 - refund amount/id in final output must match trusted evidence;
 - customer responses cannot expose internal fraud/risk/profile fields;
+- unsupported operational timelines and unsupported future-contact commitments are rejected;
 - repeated deterministic calls are cache-served and no-progress/max-step protection bounds loops;
-- unsupported operational timelines are rejected by deterministic validation;
 - malformed or inconsistent final output gets at most one no-new-tools correction pass;
 - unresolved failures fail safe while trusted already-resolved outcomes are preserved.
 
@@ -76,15 +104,15 @@ AgentResult
 
 The Quest-required top-level fields remain present: `reasoning_chain`, `action_taken`, and `customer_response`.
 
-For the active `OpenRouterProvider` + `qwen/qwen3.5-397b-a17b` path, current OpenRouter model metadata advertises both `tools` and `response_format`. The provider therefore keeps tools available to the autonomous model loop while binding the Pydantic-derived final JSON Schema. It also sends `provider.require_parameters=true`, so OpenRouter routes only to inference endpoints that advertise the parameters being requested.
+Normal autonomous model calls keep the supplied tools available and do **not** combine tool calling with `response_format`. If the model's final content is malformed or inconsistent, the single no-new-tools repair call may use the Pydantic-derived JSON Schema on a provider/model route whose structured-output capability was explicitly verified.
 
-This does **not** replace runtime validation. Provider-native structured output handles shape; the deterministic validator still checks business consistency against trusted tool evidence.
+For the active `OpenRouterProvider` + `qwen/qwen3.5-397b-a17b` path, schema-constrained calls set `provider.require_parameters=true`, so OpenRouter routes only to endpoints that advertise the requested parameters. Runtime projection and deterministic validation remain authoritative even when provider-native structured output is used.
 
-Groq remains an alternate adapter. Its documented strict Structured Outputs path is not combined with tool use, so normal Groq tool calls remain unchanged; supported no-tools repair calls can still use the schema.
+Groq remains an alternate adapter. Supported no-tools repair calls may use strict structured output, while normal tool calls remain unchanged.
 
 ## Requested-refund hardening
 
-A real live-model eval exposed an ambiguity in the original prompt: models saw an automatic cap and silently changed a customer's full-refund request into a partial refund. That is not supported by the supplied business rules.
+Earlier live-model evidence exposed a semantic failure: models saw an automatic cap and silently changed a customer's full-refund request into a partial refund. That is not supported by the supplied business rules.
 
 The project now handles this model-independently:
 
@@ -93,9 +121,8 @@ The project now handles this model-independently:
 - a whole-order refund request with no named amount uses the verified order total;
 - `ORD-1002` is pinned to a `150.0` refund request in eval scoring;
 - `ORD-1011` is pinned to a `52.0` refund request in eval scoring;
-- a missing or reduced request is a `CRITICAL_FAILURE`.
-
-The business tool remains authoritative: when the requested amount exceeds automatic authority, `process_refund` can return `ESCALATION_REQUIRED`.
+- a missing or reduced request is a `CRITICAL_FAILURE`;
+- terminal business outcomes are projected from trusted state instead of trusting the model to restate them correctly.
 
 ## Upstream starter kit
 
@@ -116,9 +143,9 @@ python -m pip install -r requirements-dev.txt
 bash scripts/bootstrap_upstream.sh
 ```
 
-`requirements-dev.txt` includes the runtime requirements plus pytest.
+`requirements-dev.txt` includes runtime requirements plus pytest.
 
-## Plug-and-play OpenRouter setup
+## OpenRouter setup
 
 Copy the example environment file and add the API key locally:
 
@@ -168,7 +195,7 @@ The default CLI prints customer-facing text. `--verbose` additionally exposes th
 
 ## Deterministic verification
 
-Before spending any model calls:
+Before spending model calls:
 
 ```bash
 python -m pytest tests -q
@@ -176,7 +203,13 @@ python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scen
 python run_evals.py --dry-run
 ```
 
-GitHub Actions runs the same deterministic gate on every push / pull request. Live API calls are intentionally excluded from CI because secrets remain local.
+GitHub Actions runs the deterministic gate on every push / pull request. Live API calls remain local because secrets are not stored in CI.
+
+At the final live-eval code revision, CI passed:
+
+- project tests: **250 passed**;
+- supplied upstream verifier: **33/33**;
+- eval dry-run: green.
 
 ## Live evaluation strategy
 
@@ -191,54 +224,53 @@ It checks, among other things:
 - hallucinated/unexpected cases;
 - false refund claims;
 - refund-precondition bypass;
+- unsupported customer-facing timeline/follow-up claims;
 - runtime failure / loop safety;
 - blocked, invalid, repeated, or cached calls;
 - latency, tokens, steps, tool count, repair usage, and cost when configured.
 
 Classification:
 
-- `CLEAN_PASS`: correct and safe with no efficiency warning;
-- `PASS_WITH_WARNING`: correct and safe but with harmless unnecessary work;
+- `CLEAN_PASS`: correct and safe with no warning;
+- `PASS_WITH_WARNING`: correct and safe but the single targeted repair path was needed;
 - `CRITICAL_FAILURE`: wrong decision, hallucination, false action claim, silent refund reduction, guardrail bypass, crash, or bounded-loop failure.
 
-Correctness and safety gate model selection. Cost and latency matter only among candidates that pass reliably.
+Correctness and safety gate model selection. Cost and latency matter only after reliability.
 
-### 1. First live smoke - the two previously failing authority cases
+## Live evaluation evidence
 
-```bash
-python run_evals.py \
-  --scenario s2_standard_above_cap_escalates \
-  --scenario s5b_boundary_52_escalates \
-  --repetitions 1 \
-  --skip-tool-probes
+A full local run was executed on **2026-08-21** at commit:
+
+```text
+06b0286ddf8309dbfa668e24543393e7a6099024
 ```
 
-Required:
-
-- `ORD-1002`: request `150.0` -> trusted `ESCALATION_REQUIRED` -> `HUMAN_ESCALATION`;
-- `ORD-1011`: request `52.0` -> trusted `ESCALATION_REQUIRED` -> `HUMAN_ESCALATION`.
-
-If either is critical, stop and inspect `eval-results/latest.json` before running more calls.
-
-### 2. Full catalog once
-
-Only after the smoke is green:
+Command:
 
 ```bash
 python run_evals.py --repetitions 1
 ```
 
-The catalog contains nine live agent scenarios plus five deterministic Scenario 8 tool probes. Scenario 5 is split into below/above-boundary entries; Scenario 7 is one multi-order customer turn.
+Observed result:
 
-### 3. Stability only after broad correctness
-
-```bash
-python run_evals.py --repetitions 3
+```text
+agent scenarios:      9/9 passed
+clean passes:         7
+passes with warning:  2
+critical failures:    0
+release gate:         PASS
+Scenario 8 probes:    5/5 clean
+average duration:     14.07 s
+average total tokens: 10,199
+repair rate:          22.2%
+max passing steps:    4
 ```
 
-Do not use repetitions to hide a systematic failure.
+The two warnings were `OUTPUT_REPAIR_USED` on Scenario 2 and Scenario 9. Both final results were correct and safe after the single bounded repair pass. No critical failure was observed.
 
-Generated reports are written to git-ignored `eval-results/` as JSON and CSV.
+This is **one complete live-catalog run**, not a claim of statistical stability across repeated runs. Three repetitions remain optional if time/budget permits; they are not used to hide or average away a systematic failure.
+
+No cost figure is claimed because the OpenRouter backend was not pinned and the candidate price fields are intentionally unset.
 
 ## Scenario coverage
 
@@ -250,7 +282,7 @@ The project covers the supplied regression behavior:
 - non-returnable digital gift card -> rejection;
 - `$48` authority boundary -> approval;
 - `$52` authority boundary -> escalation;
-- risk signals -> escalation;
+- risk signals -> escalation without exposing internal risk data;
 - processing/cancelled multi-order request -> rejection per order;
 - nonexistent order -> no hallucination, ask customer to confirm;
 - supplied bad-input/tool-error behavior -> deterministic probes.
@@ -285,19 +317,16 @@ python run_agent.py --verbose --message "My order ORD-2222 never arrived and I w
 
 Stage 1 intentionally does **not** add LangGraph/LangChain orchestration, MCP, multi-agent routing, a database, Redis, persistent customer memory, an LLM judge, a duplicate business-rule engine, or production payment/idempotency infrastructure.
 
-The lightweight Stage 2 seams already exist: a clear agent I/O contract, isolated tool access, typed state, and a small provider abstraction.
+The lightweight Stage 2 seams already exist: a clear agent I/O contract, isolated tool access, typed state, deterministic outcome projection, and a small provider abstraction.
 
-## Submission gate
+## Submission checklist
 
-The implementation is not claimed release-ready until live evidence exists. Final steps:
+Before submission / any visibility change:
 
-1. follow the safe synchronization instructions in `docs/M3_RUNBOOK.md`;
-2. confirm deterministic CI/local tests are green;
-3. add only the local `OPENROUTER_API_KEY`;
-4. run the two authority smoke scenarios;
-5. if green, run all nine live scenarios once;
-6. only then run repetitions if time/budget permits;
-7. confirm no secrets, `.vendor` source, or `eval-results/` artifacts are committed;
-8. perform the final IP/public-repository check before changing repository visibility.
+1. keep deterministic CI green after documentation-only changes;
+2. confirm no secrets, `.vendor` source, or `eval-results/` artifacts are committed;
+3. review `docs/MODEL_SELECTION.md`, `docs/GUARDRAILS.md`, and `docs/IMPLEMENTATION_SPEC.md` for consistency with the final code;
+4. run the demo commands once from the final branch;
+5. perform the final IP/public-repository check before changing repository visibility.
 
-**No project-specific OpenRouter pass rate, latency, or release-model winner is claimed until those live calls are actually run.**
+The release claim is intentionally narrow: the implemented Stage 1 agent passed the deterministic suite and one complete nine-scenario live OpenRouter/Qwen run with zero critical failures.
