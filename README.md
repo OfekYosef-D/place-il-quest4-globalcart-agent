@@ -10,18 +10,29 @@ A single autonomous customer-operations agent for the fictional GlobalCart retai
 
 ## Submission status
 
-The implementation is in final verification. Current deterministic CI is green on the post-review safety-hardened branch:
+**Submission-ready.** The final post-review runtime passed every deterministic and live gate:
 
 ```text
 project tests:          215 passed
 supplied verifier:      33/33 passed
 eval dry-run:           green
-live catalog entries:   10 agent scenarios + 5 Scenario 8 probes
+final live catalog:     10/10 CLEAN_PASS
+warnings:               0
+critical failures:      0
+Scenario 8 probes:      5/5 CLEAN_PASS
+repair rate:            0%
+release gate:           PASS
 ```
 
-The last complete live run before the final clarification-safety review passed **10/10 CLEAN_PASS**, with **0 warnings**, **0 critical failures**, **0% repair rate**, and **5/5 clean tool probes** at commit `2be3a1a90114f40ce0bd96821b4ef65ceafb37dd`.
+The final live run was executed against runtime commit:
 
-A reviewer subsequently identified one real gap: a `NEEDS_CLARIFICATION` draft could bypass terminal rendering and carry unsupported free-form business claims. The fix is structural, not phrase-specific: clarification responses are now runtime-rendered from trusted state, and unresolved clarification cases are canonicalized to `NO_ACTION`. Deterministic CI is green after that fix. One fresh live catalog run is intentionally required before final merge/submission.
+```text
+385e307e3526cc906bddf3675d2677da6c4a480c
+```
+
+It included all nine Stage 1 business scenarios plus the project-owned Hebrew end-to-end authority-boundary smoke. Average duration was **15.06 s**, average total tokens **9,912.5**, average tool calls **3.0**, and the maximum passing step count was **4**.
+
+Automated review had previously identified one real gap: a `NEEDS_CLARIFICATION` draft could bypass terminal rendering and carry unsupported free-form business claims. The fix is structural, not phrase-specific: clarification responses are runtime-rendered from trusted state, and unresolved clarification cases are canonicalized to `NO_ACTION`. The final live run above validates the post-review runtime.
 
 ## Architecture
 
@@ -236,17 +247,19 @@ python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scen
 python run_evals.py --dry-run
 ```
 
-Final live gate:
+Live gate:
 
 ```bash
 python run_evals.py --repetitions 1
 ```
 
+The final post-review live gate passed **10/10 CLEAN_PASS**, **0 warnings**, **0 critical failures**, **0% repair rate**, and **5/5 clean Scenario 8 probes** at runtime commit `385e307e3526cc906bddf3675d2677da6c4a480c`.
+
 The live scorer is deterministic — there is no evaluator LLM. It checks decisions, policy verdicts, trusted refund status, exact authority-boundary amounts, forbidden refund execution, hallucinated/missing cases, refund-precondition ordering, runtime failures/loops, repairs, caching/tool efficiency, latency, tokens, and steps.
 
 The catalog contains the nine Stage 1 business entries plus a project-owned Hebrew end-to-end Scenario 2 smoke, and five direct Scenario 8 bad-input probes.
 
-A submission build requires **zero critical failures**. See [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+See [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
 ## Scope and Stage 2 readiness
 
