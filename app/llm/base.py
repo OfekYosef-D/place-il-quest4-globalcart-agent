@@ -48,14 +48,7 @@ class ModelResponse(BaseModel):
 
 
 def ensure_unique_tool_call_ids(response: ModelResponse) -> ModelResponse:
-    """Guarantee a stable non-empty unique id on every requested tool call.
-
-    Applied at the provider boundary so the runtime can correlate every tool
-    observation with exactly one request. An id is generated when it is
-    missing/empty or already used by another call in the same response;
-    already-valid unique provider ids are preserved untouched. The ambiguous
-    "many missing ids share one placeholder" fallback must never return.
-    """
+    """Guarantee a stable non-empty unique id on every requested tool call."""
     seen: set[str] = set()
     normalized: list[ToolCallRequest] = []
     changed = False
@@ -74,7 +67,6 @@ def ensure_unique_tool_call_ids(response: ModelResponse) -> ModelResponse:
 
 
 def _fresh_tool_call_id(seen: set[str]) -> str:
-    """Generate an id that collides with neither kept nor generated ids."""
     candidate = f"call_{uuid.uuid4().hex}"
     while candidate in seen:
         candidate = f"call_{uuid.uuid4().hex}"
@@ -83,16 +75,21 @@ def _fresh_tool_call_id(seen: set[str]) -> str:
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    """Conceptual interface: LLMProvider.generate(messages, tools) -> ModelResponse.
+    """Provider-neutral model interface used by the runtime.
 
-    `messages` are canonical conversation records (`app.messages`) and `tools`
-    are canonical tool schemas exactly as supplied by the starter kit
-    (Anthropic-shaped, with `input_schema`). The runtime never converts
-    either to a provider wire format; each provider owns that conversion.
+    `messages` are canonical conversation records and `tools` are canonical
+    starter-kit schemas. `response_schema`, when supplied, is provider-neutral
+    JSON Schema for a no-tools structured response; the adapter owns translation
+    to the provider wire format.
     """
+
+    #: Adapter can request schema-constrained output when tools are disabled.
+    supports_response_schema: bool
 
     def generate(
         self,
         messages: list[Any],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> ModelResponse: ...

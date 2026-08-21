@@ -1,13 +1,11 @@
-"""CLI entry point for the Operations Resolver Agent (Milestone 2).
+"""CLI entry point for the Operations Resolver Agent.
 
 Usage:
     python run_agent.py --message "..." [--verbose]   # one-shot turn
     python run_agent.py [--verbose]                   # interactive session
 
-Default output is customer-facing text only. `--verbose` appends a
-developer trace: model steps, tool interactions, blocked guardrail events,
-repair/failure outcome, the internal sentiment/urgency assessment, and the
-run summary. Missing LLM configuration exits with code 2 and an actionable
+Default output is customer-facing text only. `--verbose` appends a developer
+trace. Missing provider/model configuration exits with code 2 and an actionable
 message.
 """
 
@@ -20,18 +18,23 @@ from typing import Any
 
 from app.agent import AgentRun, OperationsResolverAgent
 from app.config import Settings, load_settings
-from app.llm.groq_provider import GroqProvider
+from app.llm.factory import (
+    build_provider,
+    has_provider_api_key,
+    required_api_key_name,
+    supported_provider_names,
+)
 from app.tools_adapter import load_toolkit
 
 
 class CliConfigError(RuntimeError):
-    """Required runtime configuration is missing."""
+    """Required runtime configuration is missing or unsupported."""
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="run_agent.py",
-        description="GlobalCart operations resolver agent (Stage 1, Milestone 2).",
+        description="GlobalCart operations resolver agent (Place IL Quest 4 Stage 1).",
     )
     parser.add_argument(
         "--message",
@@ -46,9 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def ensure_llm_config(settings: Settings) -> None:
-    missing = []
-    if not settings.groq_api_key:
-        missing.append("GROQ_API_KEY")
+    provider_name = settings.llm_provider.strip().lower()
+    if provider_name not in supported_provider_names():
+        raise CliConfigError(
+            f"Unsupported LLM_PROVIDER {settings.llm_provider!r}; supported providers: "
+            + ", ".join(sorted(supported_provider_names()))
+            + "."
+        )
+
+    missing: list[str] = []
+    if not has_provider_api_key(settings):
+        missing.append(required_api_key_name(provider_name))
     if not settings.llm_model:
         missing.append("LLM_MODEL")
     if missing:
@@ -61,13 +72,7 @@ def ensure_llm_config(settings: Settings) -> None:
 
 def build_agent(settings: Settings) -> OperationsResolverAgent:
     ensure_llm_config(settings)
-    if settings.llm_provider.strip().lower() != "groq":
-        raise CliConfigError(
-            f"Unsupported LLM_PROVIDER {settings.llm_provider!r}: the Stage 1 "
-            "implementation supports only 'groq'. Set LLM_PROVIDER=groq in .env "
-            "or the environment (see .env.example)."
-        )
-    provider = GroqProvider(settings)
+    provider = build_provider(settings)
     kit = load_toolkit(settings.quest4_starter_kit_path)
     return OperationsResolverAgent(settings, provider, kit)
 

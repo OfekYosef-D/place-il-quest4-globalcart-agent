@@ -1,22 +1,14 @@
 {
-  "checked_at": "2026-08-19",
-  "pricing_source": "https://console.groq.com/docs/models",
+  "checked_at": "2026-08-20",
+  "pricing_source": "https://openrouter.ai/qwen/qwen3.5-397b-a17b/providers",
   "candidates": [
     {
-      "id": "gpt-oss-20b-medium",
-      "provider": "groq",
-      "model": "openai/gpt-oss-20b",
-      "reasoning_effort": "medium",
-      "input_cost_per_million": 0.075,
-      "output_cost_per_million": 0.30
-    },
-    {
-      "id": "gpt-oss-120b-medium",
-      "provider": "groq",
-      "model": "openai/gpt-oss-120b",
-      "reasoning_effort": "medium",
-      "input_cost_per_million": 0.15,
-      "output_cost_per_million": 0.60
+      "id": "qwen3.5-397b-a17b-openrouter",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.5-397b-a17b",
+      "reasoning_effort": null,
+      "input_cost_per_million": null,
+      "output_cost_per_million": null
     }
   ]
 }

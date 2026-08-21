@@ -1,4 +1,4 @@
-"""Tests for the CLI: render helpers, arg parsing, missing-config error path."""
+"""Tests for the CLI: rendering, parsing, and configuration errors."""
 
 import pytest
 
@@ -60,10 +60,12 @@ def _synthetic_run(with_repair=False, with_cost=False) -> AgentRun:
             step=1, provider="groq", model="fake", kind="tool_call",
             latency_ms=12.0, total_tokens=15, retries=1,
         ),
-        ModelCallRecord(step=2, provider="groq", model="fake", kind="final", latency_ms=8.0, total_tokens=10),
+        ModelCallRecord(
+            step=2, provider="groq", model="fake", kind="final",
+            latency_ms=8.0, total_tokens=10,
+        ),
     ]
     if with_repair:
-        # The repair pass is a real model call with real metadata (fix 7).
         model_calls.append(
             ModelCallRecord(
                 step=2, provider="groq", model="fake", kind="repair",
@@ -112,7 +114,7 @@ def test_verbose_trace_covers_steps_tools_blocks_assessment_summary():
     assert "internal assessment: sentiment=frustrated, urgency=high" in trace
     assert "status=COMPLETED" in trace
     assert "llm_calls=3" in trace
-    assert "estimated_cost_usd" not in trace, "cost only appears when pricing is configured"
+    assert "estimated_cost_usd" not in trace
 
 
 def test_verbose_trace_cache_hit_and_cost_rendering():
@@ -141,12 +143,23 @@ def test_arg_parsing():
     assert defaults.verbose is False
 
 
-def test_ensure_llm_config_reports_missing_variables():
+def test_ensure_llm_config_reports_provider_specific_variables():
     with pytest.raises(CliConfigError, match="GROQ_API_KEY"):
         ensure_llm_config(Settings())
     with pytest.raises(CliConfigError, match="LLM_MODEL"):
         ensure_llm_config(Settings(groq_api_key="key"))
-    ensure_llm_config(Settings(groq_api_key="key", llm_model="model"))  # no raise
+    ensure_llm_config(Settings(groq_api_key="key", llm_model="model"))
+
+    openrouter = Settings(llm_provider="openrouter")
+    with pytest.raises(CliConfigError, match="OPENROUTER_API_KEY"):
+        ensure_llm_config(openrouter)
+    ensure_llm_config(
+        Settings(
+            llm_provider="openrouter",
+            openrouter_api_key="key",
+            llm_model="qwen/qwen3.5-397b-a17b",
+        )
+    )
 
 
 def test_main_missing_config_exits_with_code_2(monkeypatch, capsys):
@@ -159,8 +172,7 @@ def test_main_missing_config_exits_with_code_2(monkeypatch, capsys):
 
 
 def test_build_agent_rejects_unsupported_provider():
-    """Fix 10: non-groq LLM_PROVIDER fails startup with an actionable error."""
-    settings = Settings(groq_api_key="key", llm_model="model", llm_provider="openai")
+    settings = Settings(llm_model="model", llm_provider="not-a-provider")
     with pytest.raises(CliConfigError, match="LLM_PROVIDER"):
         run_agent.build_agent(settings)
 
@@ -169,7 +181,7 @@ def test_main_unsupported_provider_exits_with_code_2(monkeypatch, capsys):
     monkeypatch.setattr(
         run_agent,
         "load_settings",
-        lambda: Settings(groq_api_key="key", llm_model="model", llm_provider="anthropic"),
+        lambda: Settings(llm_model="model", llm_provider="anthropic"),
     )
     exit_code = main(["--message", "hello"])
     captured = capsys.readouterr()

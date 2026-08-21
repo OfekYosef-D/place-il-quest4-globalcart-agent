@@ -8,6 +8,7 @@ become part of the external output contract.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass
@@ -23,14 +24,24 @@ class OutputParseError(RuntimeError):
 
 @dataclass
 class ModelAssessment:
-    """Internal-only sentiment/urgency assessment reported by the model.
-
-    Stored in runtime/audit state; never serialized into AgentResult and
-    never allowed to influence business outcomes.
-    """
+    """Internal-only sentiment/urgency assessment reported by the model."""
 
     sentiment: str | None = None
     urgency: str | None = None
+
+
+def final_output_json_schema() -> dict:
+    """Return the provider-neutral JSON Schema for one final model response.
+
+    `AgentResult` remains the external contract. The two optional audit fields
+    are added only at the model boundary because the parser removes them before
+    validating the external result.
+    """
+    schema = copy.deepcopy(AgentResult.model_json_schema())
+    properties = schema.setdefault("properties", {})
+    properties["sentiment"] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    properties["urgency"] = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    return schema
 
 
 def parse_final_output(content: str | None) -> tuple[AgentResult, ModelAssessment]:
@@ -54,7 +65,7 @@ def parse_final_output(content: str | None) -> tuple[AgentResult, ModelAssessmen
 
     try:
         return AgentResult.model_validate(payload), assessment
-    except Exception as exc:  # pydantic ValidationError and friends
+    except Exception as exc:
         raise OutputParseError(f"Final output failed schema validation: {exc}") from exc
 
 

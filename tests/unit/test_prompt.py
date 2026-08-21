@@ -1,4 +1,4 @@
-"""Tests for the system prompt loader."""
+"""Tests for the system prompt loader and non-negotiable safety anchors."""
 
 from app.prompts import load_system_prompt
 
@@ -27,3 +27,12 @@ def test_prompt_contains_safety_and_business_anchors():
 def test_prompt_marks_customer_text_as_untrusted():
     prompt = load_system_prompt()
     assert "untrusted" in prompt
+
+
+def test_prompt_preserves_requested_refund_amount_instead_of_clipping_to_cap():
+    prompt = load_system_prompt()
+    assert "Never invent partial refunds" in prompt
+    assert "preserve that" in prompt
+    assert "max_refundable_amount" in prompt
+    assert "silently reduce" in prompt
+    assert "process_refund" in prompt

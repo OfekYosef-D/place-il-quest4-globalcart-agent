@@ -1,7 +1,7 @@
-"""Observability primitives (spec section 18, GUARDRAILS section 7).
+"""Lightweight observability primitives for the agent runtime.
 
-Plain data records only. No collection pipeline or framework: the future
-runtime appends records and builds the run summary.
+These are plain data records rather than a tracing framework. The runtime
+appends them during a turn and builds a compact developer-facing summary.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ class ModelCallRecord:
     step: int
     provider: str
     model: str
-    kind: str  # "tool_call" | "final"
+    kind: str  # "tool_call" | "final" | "repair"
     latency_ms: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -40,18 +40,12 @@ class ToolCallRecord:
 
 @dataclass
 class BlockedToolEvent:
-    """Developer-trace record for a model-requested tool call the runtime blocked.
-
-    Milestone 1 defines the record only. The blocking behavior (e.g. denying
-    `process_refund` when no trusted `check_return_policy` result with
-    `eligible == true` exists for that order) is implemented in Milestone 2
-    per docs/GUARDRAILS.md section 3.3. No guardrail framework lives here.
-    """
+    """Developer-trace record for a model-requested call blocked by runtime safety."""
 
     step: int
     tool_name: str
     arguments: dict[str, Any]
-    #: Fixed reason code, e.g. "MISSING_ELIGIBLE_POLICY_PRECONDITION".
+    #: Stable reason code, e.g. "MISSING_ELIGIBLE_POLICY_PRECONDITION".
     reason: str
 
 
@@ -72,10 +66,10 @@ def estimate_cost(
     input_cost_per_million: float | None,
     output_cost_per_million: float | None,
 ) -> float | None:
-    """Estimated cost from provider-reported usage and configured pricing.
+    """Estimate cost from provider-reported usage and configured pricing.
 
-    Returns None unless both prices are configured; mutable pricing must
-    never be hardcoded in agent logic (spec section 18).
+    Returns None unless both prices are configured; mutable pricing must never
+    be hardcoded in agent logic.
     """
     if input_cost_per_million is None or output_cost_per_million is None:
         return None

@@ -19,6 +19,27 @@ def test_success_on_first_attempt_never_sleeps():
     assert sleeps == []
 
 
+def test_response_schema_is_preserved_through_retries():
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    provider = FakeProvider(
+        [TransientLLMFailure("timeout"), final_response('{"ok": true}')],
+        supports_response_schema=True,
+    )
+
+    _, attempts = generate_with_retry(
+        provider,
+        [],
+        None,
+        response_schema=schema,
+        max_retries=1,
+        backoff_seconds=0.0,
+        sleep=lambda _: None,
+    )
+
+    assert attempts == 2
+    assert provider.response_schemas == [schema, schema]
+
+
 def test_transient_failures_are_retried_with_bounded_backoff():
     provider = FakeProvider(
         [TransientLLMFailure("timeout"), TransientLLMFailure("503"), final_response("recovered")]

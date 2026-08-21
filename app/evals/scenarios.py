@@ -1,9 +1,10 @@
-"""Project-owned evaluation catalog for Milestone 3.
+"""Project-owned live evaluation catalog.
 
-The catalog records only the minimum scenario inputs/expected outcomes needed
-for automated evaluation. It does not vendor the upstream Place IL starter kit
-or duplicate its policy engine. Expected decisions come from the pinned
-upstream scenario contract documented in docs/IMPLEMENTATION_SPEC.md.
+The catalog records only customer inputs and expected outcomes needed for
+automated evaluation. It does not vendor the upstream Place IL starter kit or
+duplicate its policy engine. The first nine entries cover the supplied Stage 1
+business scenarios; the final Hebrew entry is a project-owned multilingual
+smoke using the same trusted Scenario 2 business facts.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ class ExpectedCase(BaseModel):
     error_code: str | None = None
     refund_status: Literal["APPROVED", "ESCALATION_REQUIRED", "REJECTED"] | None = None
     refund_must_not_execute: bool = False
+    expected_refund_request_amount: float | None = None
 
 
 class EvalScenario(BaseModel):
@@ -40,6 +42,7 @@ class EvalScenario(BaseModel):
     expected_status: FinalStatus = FinalStatus.COMPLETED
     cases: list[ExpectedCase] = Field(min_length=1)
     terminal_error_case: bool = False
+    language: Literal["en", "he"] = "en"
 
 
 class ToolProbe(BaseModel):
@@ -65,7 +68,7 @@ AGENT_SCENARIOS: tuple[EvalScenario, ...] = (
         id="s2_standard_above_cap_escalates", upstream_scenario="2",
         title="Legitimate damaged claim above automatic authority",
         message="Order ORD-1002 arrived damaged and leaking. I paid $150 and want a refund.",
-        cases=[ExpectedCase(order_id="ORD-1002", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED")],
+        cases=[ExpectedCase(order_id="ORD-1002", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED", expected_refund_request_amount=150.0)],
     ),
     EvalScenario(
         id="s3_outside_return_window_rejected", upstream_scenario="3",
@@ -89,7 +92,7 @@ AGENT_SCENARIOS: tuple[EvalScenario, ...] = (
         id="s5b_boundary_52_escalates", upstream_scenario="5",
         title="Boundary case above standard authority",
         message="The item in ORD-1011 arrived damaged. I need a refund for that order.",
-        cases=[ExpectedCase(order_id="ORD-1011", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED")],
+        cases=[ExpectedCase(order_id="ORD-1011", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED", expected_refund_request_amount=52.0)],
     ),
     EvalScenario(
         id="s6_risk_signals_escalate", upstream_scenario="6",
@@ -112,6 +115,13 @@ AGENT_SCENARIOS: tuple[EvalScenario, ...] = (
         message="My order ORD-2222 never arrived and I want the $300 back.",
         cases=[ExpectedCase(order_id="ORD-2222", decision=Decision.NO_ACTION, error_code="ORDER_NOT_FOUND", refund_must_not_execute=True)],
         terminal_error_case=True,
+    ),
+    EvalScenario(
+        id="s2_hebrew_above_cap_escalates", upstream_scenario="2",
+        title="Hebrew end-to-end authority escalation smoke",
+        message="הזמנה ORD-1002 הגיעה פגומה ודולפת. שילמתי 150 דולר ואני רוצה החזר מלא.",
+        language="he",
+        cases=[ExpectedCase(order_id="ORD-1002", decision=Decision.HUMAN_ESCALATION, policy_verdict="ELIGIBLE", refund_status="ESCALATION_REQUIRED", expected_refund_request_amount=150.0)],
     ),
 )
 

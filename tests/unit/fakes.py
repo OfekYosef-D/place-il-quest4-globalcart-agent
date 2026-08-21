@@ -8,16 +8,30 @@ from app.llm.base import ModelResponse, ToolCallRequest
 class FakeProvider:
     """Scripted provider: replays `ModelResponse` items or raises exceptions.
 
-    Each `generate` call pops the next scripted item. Records every call's
-    messages snapshot and tools so tests can assert on what the runtime sent.
+    Existing tests inspect `calls` as `(messages, tools)` pairs. Structured
+    response contracts are recorded separately in `response_schemas` so the
+    older call-shape contract stays stable.
     """
 
-    def __init__(self, scripted: list) -> None:
-        self._scripted = list(scripted)
-        self.calls: list[tuple[list, object]] = []
+    supports_response_schema = False
+    supports_response_schema_with_tools = False
 
-    def generate(self, messages, tools=None) -> ModelResponse:
+    def __init__(
+        self,
+        scripted: list,
+        *,
+        supports_response_schema: bool = False,
+        supports_response_schema_with_tools: bool = False,
+    ) -> None:
+        self._scripted = list(scripted)
+        self.supports_response_schema = supports_response_schema
+        self.supports_response_schema_with_tools = supports_response_schema_with_tools
+        self.calls: list[tuple[list, object]] = []
+        self.response_schemas: list[object] = []
+
+    def generate(self, messages, tools=None, *, response_schema=None) -> ModelResponse:
         self.calls.append((list(messages), tools))
+        self.response_schemas.append(response_schema)
         if not self._scripted:
             raise AssertionError("FakeProvider script exhausted")
         item = self._scripted.pop(0)
@@ -27,10 +41,7 @@ class FakeProvider:
 
 
 def tool_call_response(*calls: tuple[str, str, dict], content: str | None = None) -> ModelResponse:
-    """Build a ModelResponse requesting tool calls.
-
-    Each positional item is `(call_id, tool_name, arguments)`.
-    """
+    """Build a ModelResponse requesting tool calls."""
     return ModelResponse(
         content=content,
         tool_calls=[
