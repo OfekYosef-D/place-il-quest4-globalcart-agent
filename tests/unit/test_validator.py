@@ -134,6 +134,37 @@ def test_completed_cannot_contain_unresolved_case():
     assert any("unresolved" in issue for issue in issues)
 
 
+def test_unresolved_clarification_case_must_be_no_action_without_terminal_fields():
+    state = AgentState(
+        cases={
+            "ORD-X": CaseState(
+                order_id="ORD-X",
+                verified_order={"order_id": "ORD-X", "total_amount": 20.0},
+            )
+        }
+    )
+    wrong = _result(
+        [
+            CaseResult(
+                order_id="ORD-X",
+                decision=Decision.HUMAN_ESCALATION,
+                policy_verdict="ELIGIBLE",
+                escalation_reasons=["INVENTED"],
+            )
+        ],
+        status=FinalStatus.NEEDS_CLARIFICATION,
+    )
+    issues = validate_result(wrong, state)
+    assert any("must use NO_ACTION" in issue for issue in issues)
+    assert any("cannot report terminal" in issue for issue in issues)
+
+    correct = _result(
+        [CaseResult(order_id="ORD-X", decision=Decision.NO_ACTION)],
+        status=FinalStatus.NEEDS_CLARIFICATION,
+    )
+    assert validate_result(correct, state) == []
+
+
 def test_resolved_touched_case_may_not_disappear():
     state = _approved_state()
     state.tool_history.append(
@@ -183,8 +214,7 @@ def test_tools_called_matches_factual_tool_set_only():
 def test_validator_does_not_depend_on_natural_language_phrase_lists():
     state = _approved_state()
     # Natural-language business claims are not interpreted here. In production
-    # terminal customer text is overwritten by the deterministic renderer before
-    # this validator runs.
+    # customer text is overwritten by deterministic rendering before validation.
     result = _result(
         [_approved_case()],
         response="נציג יחזור אליך מחר; refund will settle in 3 days.",
