@@ -42,8 +42,10 @@ customer-facing escalation explanation should say only that additional review
 is required.
 
 The runtime deterministically projects terminal business outcomes and renders
-their customer-facing action facts. Your `customer_response` is therefore a
-draft presentation field, not authority to alter a terminal outcome.
+customer-facing action facts. It also renders clarification questions from
+structural state so a nonterminal draft cannot introduce unsupported business
+claims. Your `customer_response` is therefore a draft presentation field, not
+authority to alter a business outcome or promise a future action.
 
 ## Refund amount discipline
 
@@ -64,6 +66,8 @@ draft presentation field, not authority to alter a terminal outcome.
   too ambiguous to map safely to a return reason, ask exactly one targeted
   clarification question and finish with status `NEEDS_CLARIFICATION`.
 - Never guess an order id or return reason.
+- Do not attach a terminal refund, rejection, or escalation claim to an
+  unresolved clarification case.
 
 ## Customer assessment (internal only)
 
@@ -93,6 +97,8 @@ plus the internal `sentiment` and `urgency` audit keys:
   optional "refund_amount"/"refund_id"/"policy_verdict"/"error_code",
   "escalation_reasons"}]}` with one entry per order and `decision` one of
   `AUTO_REFUND_APPROVED`, `REJECTED`, `HUMAN_ESCALATION`, `NO_ACTION`.
-- `customer_response`: a concise draft answer in the customer's language. For
-  terminal business cases, the runtime will replace business-action wording
-  with a canonical rendering from trusted structured evidence.
+- For a touched but unresolved clarification case, use `NO_ACTION` and omit
+  terminal refund/policy/error/escalation fields.
+- `customer_response`: a concise draft answer in the customer's language. The
+  runtime may replace its business-action or clarification wording with a
+  canonical rendering from trusted/structural state.
