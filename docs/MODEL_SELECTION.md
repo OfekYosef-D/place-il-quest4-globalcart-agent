@@ -25,40 +25,49 @@ External leaderboards are context only. The release decision for this project co
 
 The first live matrix used Groq-hosted `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. The aggregate matrix was contaminated by provider rate-limit responses and therefore must not be presented as clean model accuracy.
 
-The genuine pre-limit failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). Source review showed the system prompt had not stated the requested-amount semantics explicitly. The runtime/tools behaved as implemented; the prompt/eval contract was incomplete.
+The genuine pre-limit failures were still useful: both models repeatedly reduced full-refund authority-boundary requests to the automatic cap (for example `$150 -> $50` and `$52 -> $50`). That behavior violated the supplied business contract because `process_refund` must receive the requested/full amount and decide whether to approve or escalate.
 
 That gap is now hardened model-independently:
 
 - the prompt prohibits invented/silent partial refunds and preserves the requested/full order amount;
 - eval scenarios pin `ORD-1002` to `150.0` and `ORD-1011` to `52.0` at the actual `process_refund` call boundary;
-- any reduction or missing required refund request is a critical eval failure.
+- any reduction or missing required refund request is a critical eval failure;
+- terminal business outcomes are projected deterministically from trusted tool evidence.
 
 The 120B setup also produced additional genuine protocol/timeline failures, so it is not an active release candidate.
 
-## Active provider/model candidate
+## Selected release path
 
-The next candidate is:
+Provider/gateway:
 
-- provider/gateway: `openrouter`;
-- model: `qwen/qwen3.5-397b-a17b`;
-- reasoning override: unset/provider default;
-- configured per-million price: intentionally unset because OpenRouter can route the same model through multiple backends with different prices unless a backend is pinned.
+```text
+openrouter
+```
 
-Why this candidate is worth testing:
+Model:
 
-- the current OpenRouter model page advertises both `tools` and `response_format` for `qwen/qwen3.5-397b-a17b`;
-- OpenRouter standardizes the OpenAI-compatible tool-call loop across tool-capable models;
-- `provider.require_parameters=true` restricts routing to inference endpoints that advertise support for the parameters requested by the adapter;
-- current tau-bench/OpenRouter evidence makes this a materially more relevant agentic candidate than selecting another model from size or reputation alone.
+```text
+qwen/qwen3.5-397b-a17b
+```
 
-Official references checked 2026-08-20:
+Reasoning override: unset/provider default.
+
+Configured per-million price: intentionally unset because OpenRouter can route the same model through multiple inference backends with different prices unless a backend is pinned.
+
+Why this candidate was selected for the final Stage 1 submission path:
+
+- it exposes the required autonomous tool-calling behavior through the existing provider-neutral runtime;
+- OpenRouter exposes structured output for the selected model on no-tools calls, which is used only for the bounded repair path;
+- `provider.require_parameters=true` restricts routing to inference endpoints that advertise support for parameters requested by the adapter;
+- most importantly, the project-specific live GlobalCart suite passed with zero critical failures.
+
+Official capability references checked 2026-08-20:
 
 - https://openrouter.ai/qwen/qwen3.5-397b-a17b
 - https://openrouter.ai/qwen/qwen3.5-397b-a17b/providers
 - https://openrouter.ai/docs/guides/routing/provider-selection
 - https://openrouter.ai/docs/features/tool-calling
 - https://openrouter.ai/docs/features/structured-outputs
-- https://taubench.com/
 
 ## Provider architecture
 
@@ -76,17 +85,73 @@ GroqProvider OpenRouterProvider
 
 Both adapters normalize into the same `ModelResponse`. OpenAI-compatible wire conversion is shared in one small helper module rather than duplicated between adapters. API keys remain provider-specific environment variables and never enter the agent loop.
 
-The final-output contract is provider-neutral. `SchemaBoundProvider` binds the Pydantic-derived `AgentResult` JSON Schema only when the selected adapter/model route has an explicitly verified capability to combine tool use with structured output. For the active OpenRouter/Qwen candidate, normal autonomous calls therefore keep tools available while constraining final content. For Groq, normal tool calls remain unchanged because its documented Structured Outputs path cannot be combined with tools; supported no-tools repair calls may still use the schema. The deterministic parser and validator remain the final consistency/safety boundary in both cases.
+The final-output contract is provider-neutral:
 
-This is deliberately capability-based rather than assuming every OpenRouter model supports the same parameters. Adding another model to structured tool mode requires verifying its current OpenRouter capabilities first.
+- normal autonomous calls keep tools available;
+- normal tool calls do not combine tool use with `response_format`;
+- if final content is malformed or inconsistent, one no-new-tools repair call is allowed;
+- on a verified provider/model route, that repair call may request the Pydantic-derived `AgentResult` JSON Schema;
+- deterministic outcome projection and validation remain the business/safety authority regardless of provider-native schema support.
 
-## What is intentionally not claimed yet
+This deliberately avoids depending on an unverified tools-plus-schema request shape.
 
-Until the OpenRouter candidate is run with local credentials:
+## Final live evidence
 
-- Qwen3.5-397B-A17B is a **candidate**, not the selected release winner;
-- there is no project-specific OpenRouter latency/token/cost result;
-- there is no claim that all nine live scenarios pass;
-- the provisional `AGENT_MAX_STEPS` value is not considered calibrated from this candidate.
+A complete local catalog run was executed on **2026-08-21** at commit:
 
-First run the two known authority-boundary smoke scenarios. Only if they pass should the full nine-scenario catalog be run once; repetitions come after broad correctness.
+```text
+06b0286ddf8309dbfa668e24543393e7a6099024
+```
+
+Command:
+
+```bash
+python run_evals.py --repetitions 1
+```
+
+Observed candidate summary:
+
+```text
+total agent runs:      9
+clean passes:          7
+passes with warning:   2
+critical failures:     0
+release gate:          PASS
+pass rate:             100%
+clean rate:            77.8%
+average duration:      14.07 s
+average total tokens:  10,199
+average tool calls:    2.78
+repair rate:           22.2%
+max passing steps:     4
+```
+
+All five deterministic Scenario 8 bad-input/source-behavior probes were also `CLEAN_PASS`.
+
+The two warning runs were:
+
+- `s2_standard_above_cap_escalates` -> `OUTPUT_REPAIR_USED`;
+- `s9_nonexistent_order_no_hallucination` -> `OUTPUT_REPAIR_USED`.
+
+Both remained correct and safe after the single targeted correction pass. There were no critical failures.
+
+The authority-boundary cases were specifically verified after the refund hardening:
+
+- `ORD-1002` preserved the full `$150` request and escalated instead of clipping to `$50`;
+- `ORD-1011` preserved the full `$52` request and escalated instead of clipping to `$50`.
+
+A later targeted live smoke of the customer-facing guardrail changes produced `3/3 CLEAN_PASS` for Scenario 1, Scenario 5a, and Scenario 6 with no repairs.
+
+## Scope of the claim
+
+The evidence supports selecting `openrouter/qwen/qwen3.5-397b-a17b` as the Stage 1 release path for this submission.
+
+The claim is intentionally narrow:
+
+- one complete nine-scenario live catalog run passed with zero critical failures;
+- deterministic tests and the supplied 33-check verifier were green at the same code revision;
+- this is not a statistical stability claim across repeated live runs;
+- cost is not reported because the OpenRouter inference backend and price were not pinned;
+- OpenRouter routing can vary the underlying provider, so the measured latency/token result belongs to this observed run, not to every future route.
+
+Three repetitions remain optional if time/budget permits. They are not required to reinterpret or average away any systematic failure; if a future repeated run exposes a real correctness issue, that issue should be fixed rather than hidden by aggregation.
