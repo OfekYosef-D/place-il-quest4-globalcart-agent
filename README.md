@@ -1,16 +1,29 @@
 # GlobalCart Operations Resolver Agent
 
-Place IL Quest 4, Stage 1: a single autonomous customer-operations agent for the fictional GlobalCart retail environment.
+**Place IL Quest 4 — Stage 1**
 
-**Status:** final verification candidate. The current branch passes the deterministic project suite, the supplied 33-check verifier, and the eval dry-run. One final live catalog run is intentionally left as the submission gate after the latest customer-presentation hardening.
+A single autonomous customer-operations agent for the fictional GlobalCart retail environment. The LLM decides what the customer needs, which supplied tool to call next, and when it has enough evidence to stop. Deterministic Python owns execution authority, trusted state, irreversible business outcomes, customer-facing safety, loop bounds, and fail-safe behavior.
 
 > **Probabilistic intelligence, deterministic guardrails.**
 >
-> The LLM decides what to investigate and which tool to call. Trusted code decides what actually happened. Customer-facing terminal action facts are rendered from that trusted outcome.
+> The model decides what to do. Trusted code decides what actually happened.
 
-## Why this design
+## Submission status
 
-The project is deliberately small: one agent, four supplied tools, short-term conversation state, and no framework-heavy orchestration. The interesting engineering problem is the authority boundary between probabilistic reasoning and irreversible business claims.
+The implementation is in final verification. Current deterministic CI is green on the post-review safety-hardened branch:
+
+```text
+project tests:          215 passed
+supplied verifier:      33/33 passed
+eval dry-run:           green
+live catalog entries:   10 agent scenarios + 5 Scenario 8 probes
+```
+
+The last complete live run before the final clarification-safety review passed **10/10 CLEAN_PASS**, with **0 warnings**, **0 critical failures**, **0% repair rate**, and **5/5 clean tool probes** at commit `2be3a1a90114f40ce0bd96821b4ef65ceafb37dd`.
+
+A reviewer subsequently identified one real gap: a `NEEDS_CLARIFICATION` draft could bypass terminal rendering and carry unsupported free-form business claims. The fix is structural, not phrase-specific: clarification responses are now runtime-rendered from trusted state, and unresolved clarification cases are canonicalized to `NO_ACTION`. Deterministic CI is green after that fix. One fresh live catalog run is intentionally required before final merge/submission.
+
+## Architecture
 
 ```text
 Customer / CLI
@@ -18,111 +31,90 @@ Customer / CLI
       v
 Autonomous LLM loop
   understand request
-  choose next tool
+  choose next supplied tool
   decide when enough evidence exists
       |
       v
 Guarded ToolExecutor
       |
       v
-Supplied GlobalCart tools
+Supplied TOOL_SCHEMAS + TOOL_REGISTRY
       |
       v
-Trusted AgentState
+Trusted AgentState / CaseState
       |
       v
 Deterministic outcome projector
       |
       v
-Canonical terminal CaseResult
+Canonical CaseResult
       |
       v
-Deterministic localized renderer
+Deterministic customer renderer
+  terminal facts + clarification safety
+      |
+      v
+Structural/evidence validator
       |
       v
 Structured AgentResult
 ```
 
-There is no hardcoded `order -> user -> policy -> refund` workflow. The model remains autonomous about tool selection and ordering. Runtime code owns execution authority, trusted state, loop bounds, terminal business truth, and terminal customer-facing action facts.
+There is **no hardcoded `order -> user -> policy -> refund` workflow**. The model owns tool selection and ordering. Runtime code enforces only safety/consistency boundaries and maps trusted tool evidence into business truth.
 
-## Authority boundary
+### Authority boundary
 
 The LLM owns:
 
-- understanding the customer's issue;
-- choosing which supplied tool to call next;
-- tool ordering;
-- deciding when clarification is needed;
-- sentiment/urgency assessment for tone;
-- developer-facing reasoning summary.
+- issue understanding;
+- tool selection and ordering;
+- deciding whether clarification is required;
+- sentiment and urgency assessment for internal tone metadata;
+- concise developer-facing reasoning.
 
 Deterministic code owns:
 
-- the tool allowlist and execution;
-- cached trusted tool results;
-- refund execution preconditions;
-- exact terminal decisions, refund amounts, refund IDs, and error codes;
-- final tool-call accounting;
-- terminal customer-facing business wording;
+- the tool allowlist and dispatch;
+- argument validation and deterministic caching;
+- the `process_refund` precondition;
+- trusted state;
+- exact terminal decisions, refund amounts/IDs, and error codes;
+- safe customer-facing business/clarification wording;
 - retry, no-progress, and max-step bounds;
+- one bounded no-tools output repair;
 - fail-safe behavior.
 
-The key rule is simple: **language is presentation; business truth is structured.**
+## Supplied tools
 
-## Terminal customer responses are not free-form business authority
+The agent uses the four Stage 1 tools without modifying or reimplementing their business logic:
 
-An earlier version validated customer text with English phrase patterns such as future-contact or refund-success wording. A Hebrew live smoke exposed the limitation: business behavior was correct, but an unsupported future-contact promise could be phrased differently and bypass an English-only wording check.
+- `get_order_details(order_id)`
+- `get_user_profile(user_id)`
+- `check_return_policy(order_id, reason)`
+- `process_refund(order_id, amount, reason)`
 
-The final design does not try to enumerate every sentence a model could produce.
+The starter kit is loaded through the supplied `TOOL_SCHEMAS` and `TOOL_REGISTRY`. Business rules remain inside the supplied tool layer.
 
-Once trusted tools resolve a case, the runtime projects a canonical `CaseResult` and renders the terminal customer response from that structured outcome. English and Hebrew are presentation variants of the same internal facts.
+## Guardrails that are code, not prompt text
 
-For example, a trusted `ESCALATION_REQUIRED` result becomes:
+- `process_refund` is blocked unless the same order already has trusted `check_return_policy -> eligible=true` evidence.
+- `eligible=true` never means money moved; only `process_refund(status=APPROVED)` establishes a successful refund.
+- Full/requested refund amounts are passed unchanged. Automatic authority caps are never treated as permission to invent a smaller refund.
+- Ineligible policy outcomes terminate without calling `process_refund` merely to obtain another rejection.
+- `ORDER_NOT_FOUND` safely terminates that case instead of fabricating order data or chasing a minimum tool count.
+- `APPROVED`, `ESCALATION_REQUIRED`, `REJECTED`, ineligible-policy, and terminal-error outcomes are projected from trusted state; model-authored terminal fields cannot override them.
+- Terminal customer facts are rendered from canonical outcomes, so safety does not depend on matching phrases such as “refund approved” or translations of “will contact you”.
+- `NEEDS_CLARIFICATION` responses are also runtime-rendered. A free-form clarification draft cannot claim a refund, expose risk data, or promise future action.
+- Internal fraud/risk/profile signals never become customer-facing explanations.
+- Repeated deterministic calls are cache-served; no-progress cycles and maximum steps are bounded.
+- Only known transient LLM failures are retried; tool business errors are data, not infrastructure retries.
+- Malformed or inconsistent final output gets at most one no-new-tools repair pass, then fails safe.
 
-```text
-decision = HUMAN_ESCALATION
-refund_amount = null
-refund_id = null
-```
-
-English presentation:
-
-```text
-Order ORD-1002: additional review is required. No refund has been issued.
-```
-
-Hebrew presentation:
-
-```text
-הזמנה ORD-1002: נדרשת בדיקה נוספת. לא בוצע החזר כספי.
-```
-
-No phrase-level detector is needed to know whether the refund happened: the structured tool result already answers that question.
-
-Clarification turns remain conversational because no terminal business action has been established yet.
-
-## Business and safety invariants
-
-- Supplied tool results are the only source of business truth.
-- Customer text is untrusted case data, never policy or system authority.
-- Only the four supplied tools are exposed.
-- `process_refund` cannot execute unless the same order already has trusted `check_return_policy -> eligible=true` evidence.
-- `eligible=true` does not mean a refund occurred; only `process_refund` determines the operational result.
-- A requested/full refund amount is preserved exactly. Automatic authority caps are never used to silently invent a partial refund.
-- Ineligible policy results terminate without calling `process_refund` merely to obtain another rejection.
-- `ORDER_NOT_FOUND` terminates that case without invented order facts.
-- `APPROVED`, `ESCALATION_REQUIRED`, `REJECTED`, ineligible-policy, and terminal-error outcomes are projected deterministically.
-- Internal risk/profile signals never become customer-facing explanations.
-- Repeated deterministic calls are cache-served and bounded by no-progress protection.
-- LLM calls retry only known transient failures and remain bounded.
-- Malformed/inconsistent final structured output gets at most one no-new-tools correction pass.
-- Technical failures fail closed while preserving any trusted outcomes already established.
-
-See `docs/GUARDRAILS.md` for the compact safety contract.
+See [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md).
 
 ## Structured output
 
-Every run returns the same Pydantic contract:
+Every turn returns a strict Pydantic `AgentResult`:
 
 ```text
 AgentResult
@@ -134,9 +126,9 @@ AgentResult
   customer_response
 ```
 
-The Quest-required top-level fields remain present: `reasoning_chain`, `action_taken`, and `customer_response`.
+The Quest-required top-level fields — `reasoning_chain`, `action_taken`, and `customer_response` — are always present.
 
-`CaseResult` uses one of:
+Per-case decisions are:
 
 ```text
 AUTO_REFUND_APPROVED
@@ -145,45 +137,54 @@ HUMAN_ESCALATION
 NO_ACTION
 ```
 
-## Provider architecture
+## Requirement coverage
 
-The agent depends on a small `LLMProvider` abstraction. The selected Stage 1 path is:
+| Stage 1 expectation | Implementation evidence |
+| --- | --- |
+| One autonomous resolver agent | `OperationsResolverAgent` runs one model-controlled tool loop; no router/sub-agents |
+| Real supplied tools | `ToolKit` loads the supplied schemas/registry; `ToolExecutor` dispatches actual tool calls |
+| 2+ tools when feasible | Live scenarios use logical multi-tool flows; terminal errors stop safely instead of calling irrelevant tools |
+| Business decision | Trusted outcomes project to approve, reject, human escalation, or no action |
+| Parseable output | Strict Pydantic `AgentResult` with the required top-level fields |
+| Guardrails in code | Tool precondition, terminal projection, deterministic rendering, validator, bounded loops/retries |
+| Edge cases / hallucination safety | Deterministic tests + project live catalog + supplied 33-check verifier |
+| Clean engineering | Provider abstraction, typed state, isolated tools, CI, reproducible verification docs |
 
-```text
+## Provider/model
+
+Provider selection is configuration behind `LLMProvider`.
+
+Selected Stage 1 path:
+
+```dotenv
 LLM_PROVIDER=openrouter
 LLM_MODEL=qwen/qwen3.5-397b-a17b
 ```
 
-`GroqProvider` remains as an alternate adapter, demonstrating that the runtime is not tied to one gateway/model.
+`GroqProvider` remains as an alternate adapter, demonstrating that the agent runtime is not coupled to one gateway.
 
-Normal autonomous calls keep tools available and do not combine tool calling with `response_format`. If final structured content needs the single bounded repair pass, a provider/model with verified schema support may use the Pydantic-derived JSON Schema on that no-tools repair call.
+Normal autonomous calls keep tools available. Native JSON Schema is reserved for a verified **no-tools** repair call rather than assuming every route supports simultaneous tool calling and structured-output mode.
 
-See `docs/MODEL_SELECTION.md` for measured model-selection evidence and caveats.
+See [`docs/MODEL_SELECTION.md`](docs/MODEL_SELECTION.md).
 
-## Upstream starter kit
+## Setup
 
-The Place IL starter kit is **not vendored** into this repository. The project bootstraps a pinned authorized checkout under the git-ignored `.vendor/` directory:
-
-```bash
-bash scripts/bootstrap_upstream.sh
-```
-
-Pinned upstream commit:
-
-```text
-250a2e9e43189f8cf3e19260f633ed636996d68c
-```
-
-See `docs/UPSTREAM.md` for details.
-
-## Install
+Python 3.11+ is required.
 
 ```bash
 python -m pip install -r requirements-dev.txt
 bash scripts/bootstrap_upstream.sh
 ```
 
-Copy `.env.example` to `.env` and set the local OpenRouter key:
+The bootstrap script creates a git-ignored authorized checkout under `.vendor/` and runs the supplied verifier. The pinned Stage 1 source commit is:
+
+```text
+250a2e9e43189f8cf3e19260f633ed636996d68c
+```
+
+The current upstream `main` adds Stage 2 material on top of that commit; the Stage 1 files are unchanged.
+
+Copy `.env.example` to `.env` and add the local OpenRouter API key:
 
 ```dotenv
 LLM_PROVIDER=openrouter
@@ -194,7 +195,7 @@ LLM_REASONING_EFFORT=
 
 `.env`, `.vendor/`, and generated `eval-results/` are git-ignored.
 
-## Run
+## Run the agent
 
 One-shot:
 
@@ -205,7 +206,7 @@ python run_agent.py --message "My order ORD-1001 arrived damaged."
 Developer trace:
 
 ```bash
-python run_agent.py --verbose --message "My order ORD-1002 arrived damaged. I paid $150 and want a full refund."
+python run_agent.py --verbose --message "Order ORD-1002 arrived damaged. I paid $150 and want a full refund."
 ```
 
 Interactive short-term conversation:
@@ -214,54 +215,49 @@ Interactive short-term conversation:
 python run_agent.py --verbose
 ```
 
-Hebrew is supported at the customer boundary; internal enums, tool names, policy IDs, and traces remain in English.
+Example authority-boundary behavior:
+
+```text
+get_order_details(ORD-1002)
+check_return_policy(... damaged_on_arrival ...) -> ELIGIBLE
+process_refund(amount=150, ...) -> ESCALATION_REQUIRED
+customer -> additional review required; no refund issued
+```
+
+English and Hebrew are supported at the customer presentation boundary. Internal enums, tool names, policy IDs, and developer traces remain in English.
 
 ## Verification
 
-Current deterministic gate on the final-presentation code path:
+Deterministic gate:
 
-```text
-project tests:            212 passed
-supplied verifier:        33/33 passed
-eval catalog dry-run:     green
-live catalog entries:     10 (9 business scenarios + Hebrew smoke)
-Scenario 8 tool probes:   5
+```bash
+python -m pytest tests -q
+python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scenarios.py"
+python run_evals.py --dry-run
 ```
 
-The lower project-test count versus earlier development snapshots is intentional: wording/regex-specific tests were removed when phrase matching was replaced by deterministic terminal rendering, and equivalent structural/rendering invariants are tested directly.
-
-Historical live evidence for the selected OpenRouter/Qwen path, before the final presentation refactor, remains strong:
-
-```text
-9/9 agent scenarios passed
-7 clean passes
-2 bounded-repair warnings
-0 critical failures
-5/5 direct tool probes clean
-```
-
-That run was recorded at commit `06b0286ddf8309dbfa668e24543393e7a6099024`. Because runtime presentation code changed afterward, the repository does **not** reuse that result as proof for the final code revision. The final submission gate is one fresh complete live run.
-
-Run it with:
+Final live gate:
 
 ```bash
 python run_evals.py --repetitions 1
 ```
 
-The catalog now includes the Hebrew authority-boundary smoke in addition to the nine existing agent scenarios. A release passes only with zero `CRITICAL_FAILURE` results. Warnings may record bounded repair/efficiency behavior but cannot hide a business or safety failure.
+The live scorer is deterministic — there is no evaluator LLM. It checks decisions, policy verdicts, trusted refund status, exact authority-boundary amounts, forbidden refund execution, hallucinated/missing cases, refund-precondition ordering, runtime failures/loops, repairs, caching/tool efficiency, latency, tokens, and steps.
 
-See `docs/VERIFICATION.md` for the exact reproducibility checklist.
+The catalog contains the nine Stage 1 business entries plus a project-owned Hebrew end-to-end Scenario 2 smoke, and five direct Scenario 8 bad-input probes.
 
-## Scope
+A submission build requires **zero critical failures**. See [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
-Stage 1 intentionally does not add LangGraph/LangChain orchestration, MCP, multiple agents, a database, Redis, persistent customer memory, an LLM evaluator, a duplicate policy engine, or production payment infrastructure.
+## Scope and Stage 2 readiness
 
-The Stage 2 seams are already present: typed agent I/O, isolated tool access, provider abstraction, trusted short-term state, deterministic business projection, and a clear presentation boundary.
+Stage 1 intentionally does not add LangGraph/LangChain orchestration, MCP, multiple agents, a database, Redis, persistent customer memory, an LLM-as-judge business authority, a duplicate policy engine, or production payment infrastructure.
+
+The seams needed for later expansion are already explicit: typed agent I/O, isolated tool access, provider abstraction, trusted short-term state, deterministic business projection, and a separate presentation boundary.
 
 ## Documentation
 
-- `docs/IMPLEMENTATION_SPEC.md` - final architecture and runtime contract
-- `docs/GUARDRAILS.md` - safety invariants
-- `docs/MODEL_SELECTION.md` - provider/model evidence
-- `docs/VERIFICATION.md` - deterministic/live verification procedure
-- `docs/UPSTREAM.md` - pinned upstream source handling
+- [`docs/IMPLEMENTATION_SPEC.md`](docs/IMPLEMENTATION_SPEC.md) — architecture and runtime contract
+- [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) — safety invariants
+- [`docs/MODEL_SELECTION.md`](docs/MODEL_SELECTION.md) — provider/model evidence
+- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reproducible deterministic/live checks
+- [`docs/UPSTREAM.md`](docs/UPSTREAM.md) — pinned upstream source handling
