@@ -1,13 +1,13 @@
-"""Thin access layer over the supplied starter-kit tools.
+"""Thin access layer over the supplied Stage 1 starter-kit tools.
 
 The upstream `mock_services.py` is read-only: this adapter imports it from a
 configurable path and exposes its `TOOL_SCHEMAS` / `TOOL_REGISTRY` without
-modifying or rebuilding them (docs/UPSTREAM.md, MILESTONES M1). No business
-rules and no precondition logic live here.
+modifying or rebuilding them. No business rules and no precondition logic live
+here; see docs/UPSTREAM.md.
 
 Provider-agnostic by design: schemas are exposed exactly as supplied
-(Anthropic-shaped, with `input_schema`). Conversion to a provider wire
-format belongs to the provider layer (see `app.llm.groq_provider`).
+(Anthropic-shaped, with `input_schema`). Conversion to a provider wire format
+belongs to the provider layer.
 """
 
 from __future__ import annotations
