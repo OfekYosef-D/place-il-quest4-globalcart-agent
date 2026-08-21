@@ -1,10 +1,10 @@
 """Deterministic projection of trusted tool evidence into final business outcomes.
 
 The LLM owns understanding, tool choice, ordering, and when to stop. Once the
-supplied tools have produced a terminal business outcome, Python owns the
-representation of that outcome. This prevents a probabilistic final response
-from turning trusted ESCALATION_REQUIRED/REJECTED/ORDER_NOT_FOUND evidence into
-an invented refund or a different terminal status.
+supplied tools have produced a terminal business outcome, Python owns both the
+structured representation of that outcome and the customer-facing action facts.
+This prevents a probabilistic final response from turning trusted evidence into
+an invented refund, a different terminal status, or an unsupported promise.
 
 This module deliberately does not recompute policy. It only maps trusted tool
 results already stored in AgentState into the public CaseResult contract.
@@ -12,6 +12,7 @@ results already stored in AgentState into the public CaseResult contract.
 
 from __future__ import annotations
 
+from app.customer_response import render_terminal_customer_response
 from app.schemas import ActionTaken, AgentResult, CaseResult, Decision, FinalStatus
 from app.state import AgentState, CaseState, ToolInteractionOutcome
 
@@ -44,11 +45,7 @@ def factual_tools_called(state: AgentState, turn_start_history: int = 0) -> list
 
 
 def project_case_result(case: CaseState) -> CaseResult | None:
-    """Map a terminal trusted CaseState to CaseResult, or None if unresolved.
-
-    The mapping is invariant-driven and independent of scenario ids, order ids,
-    refund amounts, customer tier, or model wording.
-    """
+    """Map a terminal trusted CaseState to CaseResult, or None if unresolved."""
     policy = case.policy_result
     verdict = policy.get("verdict") if isinstance(policy, dict) else None
     refund = case.refund_result
@@ -77,7 +74,6 @@ def project_case_result(case: CaseState) -> CaseResult | None:
                 policy_verdict=verdict,
                 escalation_reasons=list(refund.get("reasons") or []),
             )
-        # Unknown/non-terminal refund payload: do not guess a business result.
         return None
 
     if case.terminal_error:
@@ -104,11 +100,11 @@ def project_result_from_state(
 ) -> AgentResult:
     """Canonicalize runtime-owned final fields from trusted current-turn state.
 
-    Resolved touched cases are replaced by deterministic projections. Any
-    model-reported case that is not grounded/touched is intentionally preserved
-    so the downstream validator can still reject hallucinated cases. If every
-    touched case is terminally resolved, the current turn is COMPLETED even if
-    the model labels a terminal ORDER_NOT_FOUND outcome as NEEDS_CLARIFICATION.
+    Resolved touched cases are replaced by deterministic projections. Model-only
+    cases are preserved long enough for the validator to reject hallucinations.
+    Once all touched cases are terminal, the top-level status is COMPLETED and
+    customer-facing terminal action facts are rendered deterministically in the
+    latest customer's language.
     """
     touched = sorted(touched_case_ids(state, turn_start_history))
     projected: dict[str, CaseResult] = {}
@@ -131,19 +127,14 @@ def project_result_from_state(
         elif order_id in reported_by_id:
             cases.append(reported_by_id[order_id])
 
-    # Preserve model-only/untouched cases so validation can expose hallucination
-    # rather than silently deleting it during projection.
+    touched_set = set(touched)
     cases.extend(
-        case for case in result.action_taken.cases if case.order_id not in set(touched)
+        case for case in result.action_taken.cases if case.order_id not in touched_set
     )
 
-    status = (
-        FinalStatus.COMPLETED
-        if touched and all_touched_resolved
-        else result.status
-    )
+    status = FinalStatus.COMPLETED if touched and all_touched_resolved else result.status
 
-    return result.model_copy(
+    projected_result = result.model_copy(
         update={
             "status": status,
             "action_taken": ActionTaken(
@@ -152,3 +143,11 @@ def project_result_from_state(
             ),
         }
     )
+
+    canonical_response = render_terminal_customer_response(projected_result, state)
+    if canonical_response is not None:
+        projected_result = projected_result.model_copy(
+            update={"customer_response": canonical_response}
+        )
+
+    return projected_result
