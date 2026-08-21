@@ -1,9 +1,9 @@
 """Deterministic consistency validator.
 
 The validator checks structured final output against trusted tool evidence. It
-intentionally does not parse natural-language wording. Terminal customer-facing
-business claims are rendered by app.customer_response from canonical structured
-outcomes, so safety does not depend on English/Hebrew phrase lists.
+intentionally does not parse natural-language wording. Customer-facing business
+claims and clarification questions are rendered from canonical/structural state,
+so safety does not depend on English/Hebrew phrase lists.
 """
 
 from __future__ import annotations
@@ -48,10 +48,13 @@ def validate_result(
             )
             continue
         issues.extend(_validate_case(order_id, case_result.decision, case_result, case))
-        if result.status is FinalStatus.COMPLETED and not _case_is_resolved(case):
+        resolved = _case_is_resolved(case)
+        if result.status is FinalStatus.COMPLETED and not resolved:
             issues.append(
                 f"Case {order_id}: COMPLETED cannot report an unresolved business case."
             )
+        if result.status is FinalStatus.NEEDS_CLARIFICATION and not resolved:
+            issues.extend(_validate_unresolved_clarification_case(order_id, case_result))
 
     issues.extend(_validate_tools_called(result, state, turn_start_history))
 
@@ -76,6 +79,28 @@ def _case_is_resolved(case: CaseState) -> bool:
         return True
     policy = case.policy_result
     return isinstance(policy, dict) and policy.get("eligible") is False
+
+
+def _validate_unresolved_clarification_case(order_id: str, case_result) -> list[str]:
+    """Ensure an unresolved case cannot carry a fabricated terminal decision."""
+    issues: list[str] = []
+    if case_result.decision is not Decision.NO_ACTION:
+        issues.append(
+            f"Case {order_id}: unresolved NEEDS_CLARIFICATION case must use NO_ACTION, "
+            f"got {case_result.decision.value}."
+        )
+    if (
+        case_result.refund_amount is not None
+        or case_result.refund_id
+        or case_result.policy_verdict
+        or case_result.error_code
+        or case_result.escalation_reasons
+    ):
+        issues.append(
+            f"Case {order_id}: unresolved NEEDS_CLARIFICATION case cannot report "
+            "terminal refund, policy, error, or escalation fields."
+        )
+    return issues
 
 
 def _validate_tools_called(
