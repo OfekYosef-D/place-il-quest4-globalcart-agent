@@ -100,11 +100,16 @@ def project_result_from_state(
 ) -> AgentResult:
     """Canonicalize runtime-owned final fields from trusted current-turn state.
 
-    Resolved touched cases are replaced by deterministic projections. Model-only
-    cases are preserved long enough for the validator to reject hallucinations.
+    Resolved touched cases are replaced by deterministic projections. During a
+    clarification turn, touched-but-unresolved cases are canonicalized to
+    ``NO_ACTION`` with no terminal business fields; the model cannot smuggle an
+    unsupported escalation/refund decision into structured output. Model-only
+    cases remain long enough for the validator to reject hallucinations.
+
     Once all touched cases are terminal, the top-level status is COMPLETED and
-    customer-facing terminal action facts are rendered deterministically in the
-    latest customer's language.
+    customer-facing action facts are rendered deterministically in the latest
+    customer's language. Clarification wording is also rendered safely from
+    structural state.
     """
     touched = sorted(touched_case_ids(state, turn_start_history))
     projected: dict[str, CaseResult] = {}
@@ -124,6 +129,8 @@ def project_result_from_state(
     for order_id in touched:
         if order_id in projected:
             cases.append(projected[order_id])
+        elif result.status is FinalStatus.NEEDS_CLARIFICATION:
+            cases.append(CaseResult(order_id=order_id, decision=Decision.NO_ACTION))
         elif order_id in reported_by_id:
             cases.append(reported_by_id[order_id])
 
