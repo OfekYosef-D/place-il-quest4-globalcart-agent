@@ -29,7 +29,7 @@ Unknown tools and invalid arguments are recorded and never dispatched as valid a
 
 Runtime blocks `process_refund` unless the same order already has trusted `check_return_policy` evidence with `eligible == true`.
 
-This rule prevents the model from using the irreversible tool before policy eligibility has been established, while leaving policy calculation inside the supplied tool.
+This prevents the model from using the irreversible tool before policy eligibility has been established, while leaving policy calculation inside the supplied tool.
 
 ## 4. Refund amount integrity
 
@@ -56,16 +56,16 @@ Terminal decisions are projected from trusted evidence instead of accepted from 
 
 A model-provided terminal decision cannot override this mapping.
 
-## 6. Terminal customer presentation
+## 6. Customer presentation
 
-Customer-facing terminal action claims are rendered from canonical structured outcomes.
+Customer-facing business claims are rendered from canonical structured outcomes.
 
-The safety rule is **not** implemented as a dictionary of English forbidden phrases or translated regex variants. That approach does not generalize across languages or paraphrases.
+The safety rule is **not** implemented as a dictionary of forbidden English phrases or translated regex variants. That approach does not generalize across languages or paraphrases.
 
 Instead:
 
 ```text
-trusted evidence -> canonical outcome -> localized terminal wording
+trusted evidence -> canonical outcome -> localized customer wording
 ```
 
 Therefore:
@@ -77,13 +77,19 @@ Therefore:
 - nonexistent orders ask the customer to confirm the identifier;
 - English and Hebrew use the same structured business truth.
 
-## 7. Clarification
+## 7. Clarification safety
 
-If required customer information is missing or ambiguous, the agent returns `NEEDS_CLARIFICATION` and asks one targeted question.
+`NEEDS_CLARIFICATION` is nonterminal, but it is still a customer-facing output and therefore cannot bypass the presentation boundary.
 
-Clarification must not guess an order ID, reason, policy result, or completed action.
+The LLM decides **whether** clarification is needed. Runtime code renders the delivered question from structural state:
 
-No terminal business action has been established at this stage, so clarification wording can remain conversational rather than using the terminal renderer.
+- no order identifier -> ask for the order number;
+- identified but unresolved order -> ask for the refund/return reason;
+- mixed turn -> render any already-resolved canonical case facts, then ask one clarification question for the unresolved case(s).
+
+Touched-but-unresolved cases are canonicalized to `NO_ACTION` with no refund, policy, error, or escalation fields. This prevents a free-form clarification draft from smuggling in a fabricated approval/rejection/escalation, internal-risk disclosure, timeline, or future-contact promise.
+
+The runtime does not guess an order ID or return reason.
 
 ## 8. Confidentiality
 
@@ -128,9 +134,10 @@ Runtime verifies structured evidence consistency, including:
 - approved refund amount/id exactly match trusted evidence;
 - escalation/rejection/error decisions match trusted evidence;
 - refund fields never appear without trusted approval;
+- unresolved clarification cases use `NO_ACTION` and carry no terminal fields;
 - `COMPLETED` does not contain an unresolved business case.
 
-The validator intentionally does not infer natural-language semantics from phrase lists; terminal customer semantics are enforced by rendering from structured outcomes.
+The validator intentionally does not infer natural-language semantics from phrase lists; customer semantics are enforced by deterministic rendering from structured/structural state.
 
 ## 12. Repair and fail-safe
 
