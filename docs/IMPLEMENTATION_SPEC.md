@@ -1,113 +1,66 @@
 # Implementation Specification
 
-This document describes the final Stage 1 engineering contract for the GlobalCart Operations Resolver Agent.
+## Goal
 
-## 1. Goal
+Build one autonomous GlobalCart Operations Resolver Agent that understands a customer request, chooses and calls the supplied tools, reaches a safe business outcome, and returns a parseable result.
 
-Build one autonomous operations agent that can understand a retail-support request, choose and call the supplied tools, reach a business outcome, and return a parseable customer-facing result.
+Stage 1 stays deliberately small: one agent, short-term session state, direct tool calling, and deterministic safety boundaries.
 
-The design must remain small enough to explain and extend into Stage 2 without introducing multi-agent or infrastructure complexity in Stage 1.
+## Source of truth
 
-## 2. Source of truth
+Business facts come only from the supplied tools:
 
-Business facts come only from the supplied GlobalCart tool layer:
+- `get_order_details`
+- `get_user_profile`
+- `check_return_policy`
+- `process_refund`
 
-- `get_order_details(order_id)`
-- `get_user_profile(user_id)`
-- `check_return_policy(order_id, reason)`
-- `process_refund(order_id, amount, reason)`
+The runtime consumes the supplied `TOOL_SCHEMAS` and `TOOL_REGISTRY`. It does not reimplement return windows, caps, risk rules, or eligibility.
 
-The runtime uses the supplied `TOOL_SCHEMAS` and `TOOL_REGISTRY`; it does not reimplement return windows, refund caps, risk rules, or eligibility.
+## Authority boundary
 
-Business-error payloads are data, not retryable exceptions. Programmer/system failures fail closed.
+The LLM owns probabilistic judgment:
 
-## 3. Authority boundary
-
-### LLM responsibilities
-
-The model owns probabilistic judgment:
-
-- understand the customer request;
-- identify whether clarification is needed;
-- choose the next supplied tool;
-- choose tool ordering;
-- decide when enough evidence has been gathered;
-- provide a concise developer-facing reasoning summary;
-- assess sentiment/urgency for tone only.
-
-### Runtime responsibilities
+- understand the issue;
+- choose the next supplied tool and ordering;
+- decide whether clarification is needed;
+- decide when enough evidence exists;
+- summarize reasoning;
+- assess sentiment/urgency for internal tone metadata.
 
 Python owns deterministic authority:
 
-- execute only allowed tools;
-- validate tool arguments;
-- cache deterministic calls;
-- store trusted state;
-- enforce refund preconditions;
-- bound retries and loop progress;
-- project terminal business outcomes from trusted evidence;
-- render terminal customer-facing business facts;
-- validate the structured result;
-- fail safely.
+- tool allowlisting, validation, dispatch, and caching;
+- trusted state;
+- refund execution preconditions;
+- retry/no-progress/max-step bounds;
+- terminal business outcomes;
+- unresolved clarification structure;
+- customer-facing business/clarification wording;
+- structured validation and fail-safe behavior.
 
-The model can choose an action; it cannot redefine the result of an executed business tool.
-
-## 4. Runtime flow
+## Runtime flow
 
 ```text
 customer turn
-    |
-    v
-LLM + supplied tool schemas
-    |
-    +--> tool call? --> guarded executor --> trusted observation --> loop
-    |
-    `--> final structured draft
-                |
-                v
-       parse AgentResult
-                |
-                v
-       project trusted outcomes
-                |
-                v
-       render terminal customer facts
-                |
-                v
-       structural/evidence validation
-                |
-       valid ----+---- invalid
-        |                  |
-        v                  v
-      return       one no-tools repair
-                           |
-                           v
-                    project + render + validate
-                           |
-                    valid --+-- invalid
-                      |          |
-                      v          v
-                    return    FAILED_SAFE
+    -> autonomous LLM/tool loop
+    -> trusted tool observations
+    -> structured model draft
+    -> deterministic outcome projection
+    -> clarification canonicalization when needed
+    -> deterministic customer renderer
+    -> structural/evidence validator
+       -> valid: return
+       -> invalid: one no-tools repair -> validate again -> fail safe if still invalid
 ```
 
-## 5. State
+There is no hardcoded `order -> user -> policy -> refund` workflow. The model chooses actions; code decides whether an action may execute and what trusted evidence means.
 
-`AgentState` is short-term conversation state. It persists only inside the active CLI/session and contains:
+## State and output
 
-- canonical conversation messages;
-- per-order `CaseState` entries;
-- trusted tool history;
-- sentiment/urgency metadata;
-- current step count/status;
-- final/failure metadata.
+`AgentState` keeps short-term conversation messages, independent per-order `CaseState` objects, trusted tool history, sentiment/urgency, and runtime status. Restarting the process starts a new session; there is no persistent customer memory.
 
-There is no persistent customer memory or database.
-
-`CaseState` holds trusted evidence such as verified order/profile data, policy result, refund result, terminal error, and decision state.
-
-## 6. Structured result
-
-The external contract is `AgentResult`:
+External output is a strict Pydantic `AgentResult`:
 
 ```text
 status
@@ -118,192 +71,102 @@ action_taken
 customer_response
 ```
 
-Top-level status:
+Statuses: `COMPLETED`, `NEEDS_CLARIFICATION`, `FAILED_SAFE`.
 
-- `COMPLETED` - the current business case(s) reached trusted terminal outcomes;
-- `NEEDS_CLARIFICATION` - required customer information is still missing/ambiguous;
-- `FAILED_SAFE` - a technical/model/safety failure prevented a safe normal completion.
+Per-case decisions: `AUTO_REFUND_APPROVED`, `REJECTED`, `HUMAN_ESCALATION`, `NO_ACTION`.
 
-Per-case decision:
+## Tool guardrails
 
-- `AUTO_REFUND_APPROVED`
-- `REJECTED`
-- `HUMAN_ESCALATION`
-- `NO_ACTION`
+Only the four supplied tools are executable. Unknown tools or structurally invalid arguments are recorded and never dispatched as valid actions.
 
-## 7. Tool execution guardrails
+`process_refund` is blocked unless the same order already has trusted `check_return_policy` evidence with `eligible == true`. This is an execution precondition, not a duplicate policy engine.
 
-### Allowlist
+Requested amount integrity:
 
-Only the four supplied tools are executable. Unknown tool names are recorded and never dispatched.
+- explicit requested amount -> preserve it;
+- whole-order refund without a named amount -> use verified order total;
+- never clip to `auto_refund_cap_usd` or `max_refundable_amount`;
+- let `process_refund` approve, reject, or escalate the full request.
 
-### Refund precondition
+## Deterministic business projection
 
-`process_refund` is blocked unless the same order already has trusted `check_return_policy` evidence with `eligible == true`.
+Trusted terminal evidence maps to public outcome fields:
 
-This is an execution guardrail, not a duplicate policy engine.
+| Trusted evidence | Decision | Refund fields |
+| --- | --- | --- |
+| `process_refund: APPROVED` | `AUTO_REFUND_APPROVED` | exact trusted amount/id |
+| `process_refund: ESCALATION_REQUIRED` | `HUMAN_ESCALATION` | none |
+| `process_refund: REJECTED` | `REJECTED` | none |
+| policy `eligible=false` | `REJECTED` | none |
+| terminal business error | `NO_ACTION` | none |
 
-### Requested amount discipline
+Model-authored terminal fields cannot override this mapping.
 
-The model must preserve the customer's requested/full refund amount:
+## Customer presentation boundary
 
-- explicit amount -> pass that amount;
-- full/whole-order refund with no explicit amount -> use verified order total;
-- never clip to `auto_refund_cap_usd` or `max_refundable_amount`.
+Customer safety does not depend on matching English phrases or translated regex variants.
 
-`process_refund` is the authority that approves, rejects, or escalates the requested amount.
-
-## 8. Deterministic terminal outcome projection
-
-When trusted evidence is terminal, the model's terminal outcome fields are not authoritative.
-
-The projector maps trusted evidence as follows:
-
-- `process_refund.status == APPROVED`
-  - `AUTO_REFUND_APPROVED`
-  - exact trusted `approved_amount`
-  - exact trusted `refund_id`
-- `process_refund.status == ESCALATION_REQUIRED`
-  - `HUMAN_ESCALATION`
-  - no refund amount/id
-  - trusted escalation reasons
-- `process_refund.status == REJECTED`
-  - `REJECTED`
-- `check_return_policy.eligible == false` with no refund execution
-  - `REJECTED`
-  - exact trusted policy verdict
-- terminal business error such as `ORDER_NOT_FOUND`
-  - `NO_ACTION`
-  - exact error code
-
-For fully resolved touched cases, the top-level status becomes `COMPLETED` regardless of a conflicting model label.
-
-## 9. Customer presentation boundary
-
-Terminal business claims are rendered from the projected structured result, not interpreted from free-form model wording.
-
-This is deliberately language-neutral at the business layer:
+Terminal path:
 
 ```text
-trusted outcome
-     -> canonical CaseResult
-     -> localized renderer
+trusted evidence -> canonical CaseResult -> localized renderer
 ```
 
-The renderer currently supports English and Hebrew customer presentation. Language selection is presentation routing; it is not a business or safety decision.
+For example, `ESCALATION_REQUIRED` renders as additional review required and explicitly states that no refund was issued. No future-contact, payout, or timeline promise is added.
 
-Examples:
+### Clarification path
 
-`HUMAN_ESCALATION`:
+A code review identified that free-form `NEEDS_CLARIFICATION` drafts could otherwise bypass terminal rendering. The final design closes that gap:
 
-```text
-EN: Order ORD-1002: additional review is required. No refund has been issued.
-HE: הזמנה ORD-1002: נדרשת בדיקה נוספת. לא בוצע החזר כספי.
-```
+- the LLM still decides that clarification is needed;
+- touched-but-unresolved cases become `NO_ACTION` with no terminal fields;
+- no order identifier -> runtime asks for the order number;
+- identified but unresolved order -> runtime asks for the refund/return reason;
+- mixed resolved/unresolved turns render canonical resolved facts, then one clarification question.
 
-The system therefore does not depend on regex lists for phrases such as "will contact", "refund approved", or their translations.
+Thus a clarification draft cannot fabricate a refund, rejection, escalation, internal-risk detail, timeline, or future promise.
 
-Clarification remains conversational because a clarification turn has not yet established a terminal business action. The model is instructed to ask one targeted question and not invent facts.
+## Confidentiality
 
-## 10. Confidentiality
+Customer-facing output never exposes internal fraud/risk scores, flags, repeat-claim counts, LTV, raw internal field names, or exact thresholds. A risk-driven escalation is presented only as requiring additional review.
 
-Internal risk/profile information is never a valid customer-facing reason. Fraud scores, fraud flags, repeat-claim counts, LTV, raw internal fields, and exact internal thresholds stay internal.
+## Loops, retries, and failures
 
-When a trusted tool requires escalation, customer presentation says only that additional review is required.
+- deterministic tool calls are cached by normalized tool+arguments;
+- repeated/no-progress cycles are bounded;
+- maximum steps is a safety ceiling;
+- only known transient LLM failures are retried with bounded backoff;
+- tool business errors are data, not infrastructure retries;
+- programmer/system failures fail closed;
+- already-resolved trusted outcomes are preserved during fail-safe handling.
 
-## 11. Caching and progress
+## Output repair
 
-Deterministic calls are cached by tool name plus normalized arguments. Identical repeated calls can be cache-served rather than executed again.
+Malformed or structurally inconsistent final output gets at most one targeted repair call. Repair receives the validation problems, exposes no tools, may use native JSON Schema only on a verified no-tools route, and is projected/rendered/validated again. A second failure becomes `FAILED_SAFE`.
 
-The runtime detects repeated/no-progress cycles and has a configurable maximum step ceiling. `max_steps` is a safety bound, not the normal stopping strategy.
+## Multi-order behavior
 
-## 12. Retry policy
+Orders remain independent within one turn. A failure or terminal result for one order does not erase another order's trusted outcome. Mixed resolved/unresolved turns can safely report resolved facts while asking for missing information.
 
-LLM retries are limited to known transient failures. The configured default is the initial call plus at most two retries with short bounded backoff.
+## Provider abstraction
 
-Business errors from supplied tools are not retried as infrastructure failures.
-
-Unknown/non-transient provider failures fail closed.
-
-## 13. Output repair
-
-If the model's final structured draft cannot be parsed or is inconsistent with trusted structured evidence:
-
-1. exactly one targeted repair call is allowed;
-2. the repair gets the validation errors and existing trusted observations;
-3. no tools are exposed during repair;
-4. provider-native JSON Schema may be used only on a route whose no-tools structured-output capability is supported;
-5. the repaired result is projected/rendered/validated again;
-6. a second failure becomes `FAILED_SAFE`.
-
-Repair is never used to gather missing business evidence.
-
-## 14. Multi-order behavior
-
-A customer turn may include multiple order IDs. Cases are independent inside one run:
-
-- each order retains its own trusted evidence/outcome;
-- one terminal failure does not erase another order's resolved result;
-- final response consolidates the cases;
-- current-turn `tools_called` reflects factual executed/cache-served tools only.
-
-## 15. Provider abstraction
-
-`LLMProvider.generate(messages, tools, ...) -> ModelResponse` isolates the runtime from provider-specific wire details.
+`LLMProvider.generate(...) -> ModelResponse` isolates provider-specific wire details.
 
 Implemented adapters:
 
-- OpenRouter (selected release path)
-- Groq (alternate adapter)
+- OpenRouter — selected Stage 1 path;
+- Groq — alternate adapter.
 
-OpenAI-compatible message/tool conversion is shared rather than duplicated.
+OpenAI-compatible message/tool conversion is shared. Normal autonomous calls keep tools available; provider-native response schema is reserved for supported no-tools repair calls.
 
-Normal autonomous tool calls do not rely on simultaneous tool-calling plus `response_format`. Native schema is reserved for supported no-tools repair calls.
+## Observability and evaluation
 
-## 16. Observability
+Developer trace records model/provider, call kind, latency, tokens, retries, tool outcomes, cache/blocked events, duration, and steps. Secrets never enter the trace.
 
-The developer trace records:
+Business correctness is scored deterministically, not by an evaluator LLM. The live catalog checks decisions, policy verdicts, trusted refund status, exact authority-boundary amounts, forbidden refund execution, hallucinated cases, precondition ordering, runtime/loop safety, repair behavior, latency, tokens, tool count, and steps.
 
-- model/provider;
-- call type (tool/final/repair);
-- latency;
-- token usage;
-- retries;
-- tool arguments/outcome summaries;
-- cache/blocked/error events;
-- total run duration and step count.
+See `docs/VERIFICATION.md` for the reproducible gate.
 
-No secret/API key enters the trace.
+## Non-goals
 
-## 17. Evaluation
-
-Business correctness is scored deterministically; there is no evaluator LLM.
-
-The live catalog checks:
-
-- expected decision and policy verdict;
-- trusted refund status;
-- exact requested amount on authority-boundary cases;
-- forbidden refund execution on ineligible cases;
-- hallucinated/missing cases;
-- refund-precondition bypass;
-- runtime failure/loop safety;
-- repair/caching/tool-efficiency warnings;
-- latency, tokens, steps, and tool count.
-
-The catalog contains the nine Stage 1 agent cases plus a project-owned Hebrew end-to-end smoke using the same Scenario 2 business truth. Scenario 8 bad-input behavior is covered by five deterministic direct-tool probes.
-
-## 18. Non-goals
-
-Stage 1 intentionally excludes:
-
-- LangGraph/LangChain orchestration;
-- MCP;
-- multiple agents or a manager/router hierarchy;
-- database/Redis/message bus;
-- persistent customer memory;
-- LLM-as-judge business authority;
-- duplicated policy rules;
-- speculative partial-refund policy;
-- production payment/idempotency infrastructure;
-- frontend work.
+Stage 1 intentionally excludes LangGraph/LangChain orchestration, MCP, multiple agents, databases/Redis, persistent customer memory, an LLM-as-judge business authority, duplicate policy logic, speculative partial-refund policy, and production payment infrastructure.
