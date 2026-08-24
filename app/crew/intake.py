@@ -33,6 +33,14 @@ SupportGoal = Literal[
     "ORDER_STATUS",
     "NONE",
 ]
+CaseReason = Literal[
+    "damaged_on_arrival",
+    "wrong_item",
+    "item_missing",
+    "late_delivery",
+    "changed_mind",
+    "unknown",
+]
 
 
 class IntakeAssessment(BaseModel):
@@ -42,6 +50,10 @@ class IntakeAssessment(BaseModel):
 
     intent: Intent
     support_goal: SupportGoal
+    case_reason: CaseReason
+    # Verbatim customer-text evidence supporting case_reason. It is validated
+    # by Python before a policy/refund flow may use the semantic reason.
+    reason_evidence: str | None = Field(default=None, max_length=160)
     issue_summary: str = Field(min_length=1, max_length=240)
 
 
@@ -73,6 +85,12 @@ Support goal values:
 - ORDER_STATUS: customer is asking where an order is / its shipping or delivery status.
 - RESOLVE_ISSUE: concrete order problem and the customer asks for help/resolution without specifying refund vs return.
 - NONE: use for greetings, general questions, out-of-scope, unclear, or a message that only states an identifier without a problem/request.
+
+case_reason must be one of the actual policy reasons when the customer's words
+support it: damaged_on_arrival, wrong_item, item_missing, late_delivery,
+changed_mind. Otherwise use unknown. For every non-unknown case_reason,
+reason_evidence MUST be a short exact verbatim substring copied from the
+customer message that supports that reason. For unknown, reason_evidence must be null.
 
 Critical rules:
 - Do not invent or extract order IDs, user IDs, dollar amounts, policy facts, fraud facts, or tool results.
