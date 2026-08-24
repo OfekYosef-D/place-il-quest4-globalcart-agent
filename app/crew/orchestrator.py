@@ -118,11 +118,6 @@ class GlobalCartCrew:
         if non_case is not None:
             return CrewRun(result=non_case, trace=trace)
 
-        # From here on, semantic classification says there is a support case.
-        # Literal customer facts are resolved independently of the LLM. A fact
-        # supplied on the latest turn overrides the same grounded fact from an
-        # unresolved earlier turn; multiple facts in the latest turn stay
-        # ambiguous and are never arbitrarily selected.
         grounding_result = _validate_grounded_customer_facts(grounded)
         if grounding_result is not None:
             return CrewRun(result=grounding_result, trace=trace)
@@ -224,6 +219,24 @@ class GlobalCartCrew:
                 result=_clarification(
                     "RETURN_REASON_REQUIRED",
                     "I found the order, but I need a little more detail about what happened before I can evaluate a return or refund.",
+                    risk=risk,
+                ),
+                trace=trace,
+            )
+
+        # A numeric amount is a deterministic monetary fact. If a customer asks
+        # for a partial/unspecified refund without a literal amount, never turn
+        # that ambiguity into a full-order refund. Only an explicit FULL scope
+        # may intentionally resolve to the trusted order total.
+        if (
+            intake.support_goal == "REFUND"
+            and grounded.explicit_amount is None
+            and intake.refund_scope != "FULL"
+        ):
+            return CrewRun(
+                result=_clarification(
+                    "REFUND_AMOUNT_REQUIRED",
+                    "Please tell me the exact refund amount you are requesting, or say that you want a full refund.",
                     risk=risk,
                 ),
                 trace=trace,
@@ -525,6 +538,7 @@ def _prior_semantic_context(context: PendingCustomerContext | None) -> dict | No
         return None
     return {
         "support_goal": context.support_goal,
+        "refund_scope": context.refund_scope,
         "case_reason": context.case_reason,
         "reason_evidence": context.reason_evidence,
         "issue_summary": context.issue_summary,
@@ -740,7 +754,6 @@ def _comms_terminal(run: SpecialistRun) -> bool:
 
 
 def _requested_amount(grounded: GroundedCustomerFacts, risk: RiskReport) -> float:
-    """Money comes from literal customer context or trusted order total, never model prose."""
     if grounded.explicit_amount is not None:
         return round(grounded.explicit_amount, 2)
     return round(float(risk.evidence.get("order_total_usd") or 0.0), 2)
