@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.llm.base import LLMProvider
 from app.llm.retry import generate_with_retry
@@ -52,9 +52,23 @@ class IntakeAssessment(BaseModel):
     support_goal: SupportGoal
     case_reason: CaseReason
     # Verbatim customer-text evidence supporting case_reason. It is validated
-    # by Python before a policy/refund flow may use the semantic reason.
+    # again against the actual customer text by Python before policy/refund use.
     reason_evidence: str | None = Field(default=None, max_length=160)
     issue_summary: str = Field(min_length=1, max_length=240)
+
+    @model_validator(mode="after")
+    def validate_semantic_shape(self) -> "IntakeAssessment":
+        if self.intent != "SUPPORT_CASE":
+            if self.support_goal != "NONE":
+                raise ValueError("non-support intent must use support_goal=NONE")
+            if self.case_reason != "unknown":
+                raise ValueError("non-support intent must use case_reason=unknown")
+        if self.case_reason == "unknown":
+            if self.reason_evidence not in {None, ""}:
+                raise ValueError("unknown case_reason must not claim supporting evidence")
+        elif not self.reason_evidence:
+            raise ValueError("non-unknown case_reason requires verbatim reason_evidence")
+        return self
 
 
 @dataclass
