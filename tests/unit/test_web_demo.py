@@ -15,12 +15,14 @@ def test_web_demo_assets_and_routes_exist():
     assert "/" in paths
     assert "/api/health" in paths
     assert "/api/scenarios" in paths
+    assert "/api/session" in paths
     assert "/api/run" in paths
 
 
-def test_demo_catalog_covers_core_stage2_cases():
+def test_demo_catalog_covers_core_stage2_and_intake_cases():
     ids = {scenario["id"] for scenario in web_app.SCENARIOS}
     assert ids == {
+        "greeting",
         "clean-refund",
         "high-risk-damaged",
         "missing-laptop",
