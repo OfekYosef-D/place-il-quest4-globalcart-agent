@@ -8,7 +8,7 @@ from app.config import Settings
 from app.crew.config import CrewSettings
 from app.crew.orchestrator import GlobalCartCrew
 from app.crew.tools import CrewToolKits
-from tests.unit.fakes import FakeProvider, final_response, tool_call_response
+from tests.unit.fakes import FakeProvider, final_response, intake_response, tool_call_response
 
 
 def _schema(name: str) -> dict:
@@ -20,7 +20,13 @@ def test_claimed_user_is_preserved_until_audit_reports_mismatch_even_after_prema
 
     def order(**kwargs):
         calls.append(("get_order_details", dict(kwargs)))
-        return {"order_id": "ORD-1005", "user_id": "USR-105", "status": "delivered", "total_amount": 480.0}
+        return {
+            "order_id": "ORD-1005",
+            "user_id": "USR-105",
+            "status": "delivered",
+            "total_amount": 480.0,
+            "items": [{"condition": "damaged_on_arrival"}],
+        }
 
     def profile(**kwargs):
         calls.append(("get_user_profile", dict(kwargs)))
@@ -74,6 +80,7 @@ def test_claimed_user_is_preserved_until_audit_reports_mismatch_even_after_prema
 
     provider = FakeProvider(
         [
+            intake_response(case_reason="unknown", reason_evidence=None),
             tool_call_response(("r1", "get_order_details", {"order_id": "ORD-1005"})),
             final_response("I have enough information."),
             tool_call_response(
@@ -87,7 +94,11 @@ def test_claimed_user_is_preserved_until_audit_reports_mismatch_even_after_prema
                     {
                         "channel_id": "CH-FRAUD",
                         "severity": "critical",
-                        "payload": {"order_id": "ORD-1005", "claimed_user_id": "USR-101"},
+                        "payload": {
+                            "order_id": "ORD-1005",
+                            "claimed_user_id": "USR-101",
+                            "reason": "USER_ORDER_MISMATCH",
+                        },
                     },
                 )
             ),
