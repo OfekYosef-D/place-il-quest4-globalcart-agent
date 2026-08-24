@@ -11,13 +11,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.crew.intake import CaseReason, SupportGoal
+from app.crew.intake import CaseReason, RefundScope, SupportGoal
 
 
 class PendingCustomerContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     support_goal: SupportGoal
+    refund_scope: RefundScope
     case_reason: CaseReason
     reason_evidence: str | None = Field(default=None, max_length=160)
     issue_summary: str = Field(min_length=1, max_length=240)
