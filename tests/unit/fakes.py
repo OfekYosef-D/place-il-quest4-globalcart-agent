@@ -76,11 +76,14 @@ def intake_response(
     *,
     intent: str = "SUPPORT_CASE",
     support_goal: str = "REFUND",
+    refund_scope: str | None = None,
     case_reason: str = "damaged_on_arrival",
     reason_evidence: str | None = "damaged",
     issue_summary: str = "Customer reports an order issue.",
 ) -> ModelResponse:
     """Build the no-tools structured semantic intake response used by Stage 2 tests."""
+    if refund_scope is None:
+        refund_scope = "PARTIAL" if support_goal == "REFUND" else "NONE"
     if case_reason == "unknown":
         reason_evidence = None
     return final_response(
@@ -88,6 +91,7 @@ def intake_response(
             {
                 "intent": intent,
                 "support_goal": support_goal,
+                "refund_scope": refund_scope,
                 "case_reason": case_reason,
                 "reason_evidence": reason_evidence,
                 "issue_summary": issue_summary,
