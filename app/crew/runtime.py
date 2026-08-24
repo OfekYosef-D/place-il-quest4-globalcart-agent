@@ -10,10 +10,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable
 
+from app.crew.tools import RoleToolKit
 from app.llm.base import LLMProvider, TransientLLMFailure, ensure_unique_tool_call_ids
 from app.llm.retry import generate_with_retry
 from app.messages import AssistantToolCallMessage, CanonicalMessage, Message, ToolObservationMessage
-from app.crew.tools import RoleToolKit
 
 
 @dataclass
@@ -120,7 +120,23 @@ class SpecialistAgent:
             )
             for call in response.tool_calls:
                 arguments = dict(call.arguments or {})
-                if call.name not in self.toolkit.tool_names:
+                if call.raw_arguments is not None:
+                    result = {
+                        "error": "INVALID_ARGUMENTS",
+                        "message": "Tool arguments were not valid JSON object arguments.",
+                    }
+                    run.interactions.append(
+                        CrewToolInteraction(
+                            step=run.steps,
+                            role=self.role,
+                            tool_name=call.name,
+                            arguments=arguments,
+                            result=result,
+                            outcome="BLOCKED",
+                            reason="INVALID_ARGUMENTS",
+                        )
+                    )
+                elif call.name not in self.toolkit.tool_names:
                     result = {
                         "error": "UNAUTHORIZED_TOOL",
                         "message": f"{self.role} is not authorized to call {call.name}.",
@@ -167,6 +183,8 @@ class SpecialistAgent:
                         content=json.dumps(result, ensure_ascii=False),
                     )
                 )
+                if run.failure_reason is not None:
+                    return run
 
             if stop_when is not None and stop_when(run):
                 return run
