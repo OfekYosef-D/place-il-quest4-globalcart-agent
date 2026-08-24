@@ -9,9 +9,9 @@ from tests.unit.fakes import FakeProvider, intake_response, tool_call_response
 from tests.unit.test_crew_stage2 import _module, _settings
 
 
-def _clean_completion_script(*, intake_evidence: str):
+def _clean_completion_script(*, intake_evidence: str, refund_scope: str = "PARTIAL"):
     return [
-        intake_response(reason_evidence=intake_evidence),
+        intake_response(reason_evidence=intake_evidence, refund_scope=refund_scope),
         tool_call_response(
             ("r1", "get_order_details", {"order_id": "ORD-1001"}),
             ("r2", "get_user_profile", {"user_id": "USR-101"}),
@@ -43,11 +43,12 @@ def test_missing_order_can_be_supplied_on_next_turn_without_raw_chat_memory():
         [
             intake_response(
                 support_goal="REFUND",
+                refund_scope="FULL",
                 case_reason="damaged_on_arrival",
                 reason_evidence="arrived damaged",
-                issue_summary="Damaged package refund request.",
+                issue_summary="Damaged package full-refund request.",
             ),
-            *_clean_completion_script(intake_evidence="arrived damaged"),
+            *_clean_completion_script(intake_evidence="arrived damaged", refund_scope="FULL"),
         ]
     )
     crew = GlobalCartCrew(
@@ -55,11 +56,12 @@ def test_missing_order_can_be_supplied_on_next_turn_without_raw_chat_memory():
     )
     session = ConversationSession(crew)
 
-    first = session.handle_customer_message("My package arrived damaged. Can I get a refund?")
+    first = session.handle_customer_message("My package arrived damaged. Can I get a full refund?")
     assert first.result.stop_reason == "ORDER_ID_REQUIRED"
     assert session.pending is not None
     assert session.pending.order_id is None
     assert session.pending.case_reason == "damaged_on_arrival"
+    assert session.pending.refund_scope == "FULL"
 
     second = session.handle_customer_message("ORD-1001")
     assert second.result.status == "COMPLETED"
@@ -68,7 +70,6 @@ def test_missing_order_can_be_supplied_on_next_turn_without_raw_chat_memory():
     assert session.pending is None
     assert [name for name, _ in module.calls].count("process_refund") == 1
 
-    # The second intake call was given semantic context separately from tools.
     second_intake_messages, second_intake_tools = provider.calls[1]
     assert second_intake_tools is None
     assert any("Prior unresolved semantic context" in message.content for message in second_intake_messages)
@@ -108,12 +109,13 @@ def test_greeting_does_not_create_case_memory_for_next_turn():
 
 def test_latest_grounded_order_replaces_prior_order_in_pending_context():
     module = _module(high_risk=False)
-    provider = FakeProvider(_clean_completion_script(intake_evidence="damaged"))
+    provider = FakeProvider(_clean_completion_script(intake_evidence="damaged", refund_scope="FULL"))
     session = ConversationSession(
         GlobalCartCrew(_settings(), CrewSettings(specialist_max_steps=4), provider, CrewToolKits(module))
     )
     session.pending = PendingCustomerContext(
         support_goal="REFUND",
+        refund_scope="FULL",
         case_reason="damaged_on_arrival",
         reason_evidence="damaged",
         issue_summary="Earlier damaged-item request.",
