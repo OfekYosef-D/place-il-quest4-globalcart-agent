@@ -7,13 +7,19 @@ next turn. Specialist histories and private model text are never persisted.
 
 from __future__ import annotations
 
+from threading import Lock
+
 from app.crew.context import PendingCustomerContext
 from app.crew.orchestrator import CrewRun, GlobalCartCrew
 
 
 _CLEAR_ORDER_REASONS = {"ORDER_NOT_FOUND", "MULTIPLE_ORDER_IDS"}
 _CLEAR_USER_REASONS = {"USER_NOT_FOUND", "MULTIPLE_USER_IDS"}
-_CLEAR_AMOUNT_REASONS = {"MULTIPLE_REQUESTED_AMOUNTS", "REQUESTED_AMOUNT_INVALID"}
+_CLEAR_AMOUNT_REASONS = {
+    "MULTIPLE_REQUESTED_AMOUNTS",
+    "REQUESTED_AMOUNT_INVALID",
+    "REFUND_AMOUNT_REQUIRED",
+}
 
 
 class ConversationSession:
@@ -22,14 +28,19 @@ class ConversationSession:
     def __init__(self, crew: GlobalCartCrew) -> None:
         self._crew = crew
         self.pending: PendingCustomerContext | None = None
+        self._lock = Lock()
 
     def reset(self) -> None:
-        self.pending = None
+        with self._lock:
+            self.pending = None
 
     def handle_customer_message(self, text: str) -> CrewRun:
-        run = self._crew.handle_customer_message(text, prior_context=self.pending)
-        self.pending = self._next_pending(run)
-        return run
+        # Serialize turns for one conversation so two concurrent HTTP requests
+        # cannot race when reading/updating pending customer context.
+        with self._lock:
+            run = self._crew.handle_customer_message(text, prior_context=self.pending)
+            self.pending = self._next_pending(run)
+            return run
 
     @staticmethod
     def _next_pending(run: CrewRun) -> PendingCustomerContext | None:
@@ -59,6 +70,7 @@ class ConversationSession:
 
         return PendingCustomerContext(
             support_goal=intake.support_goal,
+            refund_scope=intake.refund_scope,
             case_reason=intake.case_reason,
             reason_evidence=intake.reason_evidence,
             issue_summary=intake.issue_summary,
