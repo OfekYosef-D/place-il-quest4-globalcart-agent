@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GlobalCart Agent Crew</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+  <link rel="stylesheet" href="/assets/polish.css" />
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <div id="welcome" class="welcome-overlay">
+    <div class="welcome-card">
+      <div class="brand-mark">GC</div>
+      <p class="eyebrow">PLACE IL · QUEST 4 · STAGE 2</p>
+      <h1>Watch a guarded multi-agent support crew work.</h1>
+      <p class="welcome-copy">A no-tools intake layer understands the conversation first. Only grounded support cases reach the three capability-separated specialists. The interface replays observable execution facts — not private chain-of-thought.</p>
+      <div class="welcome-agents">
+        <span>Intake</span><i>→</i><span>Research</span><i>→</i><span>Decision</span><i>→</i><span>Comms</span>
+      </div>
+      <button id="startButton" class="primary-button large">Start a conversation <span>→</span></button>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark small">GC</div>
+        <div>
+          <strong>GlobalCart</strong>
+          <span>Agent Operations</span>
+        </div>
+      </div>
+
+      <button id="newCaseButton" class="new-case-button"><span>＋</span> New conversation</button>
+
+      <div class="sidebar-section">
+        <p class="section-label">DEMO SCENARIOS</p>
+        <div id="scenarioList" class="scenario-list"></div>
+      </div>
+
+      <div class="sidebar-note">
+        <span class="live-dot"></span>
+        <div><strong>Live runtime</strong><small>Typed session context · guarded side effects</small></div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MULTI-AGENT CASE CONSOLE</p>
+          <h2>Customer Operations Crew</h2>
+        </div>
+        <div id="caseStatus" class="status-chip idle"><span></span> Ready</div>
+      </header>
+
+      <section class="pipeline" aria-label="Specialist agent pipeline">
+        <article class="agent-node" data-agent="researcher">
+          <div class="agent-icon">01</div>
+          <div><span>Researcher</span><small>Fraud & evidence</small></div>
+          <b class="agent-state">Waiting</b>
+        </article>
+        <div class="pipeline-line"><i></i></div>
+        <article class="agent-node" data-agent="decision">
+          <div class="agent-icon">02</div>
+          <div><span>Decision</span><small>Policy & authority</small></div>
+          <b class="agent-state">Waiting</b>
+        </article>
+        <div class="pipeline-line"><i></i></div>
+        <article class="agent-node" data-agent="comms">
+          <div class="agent-icon">03</div>
+          <div><span>Comms</span><small>Routing & alerts</small></div>
+          <b class="agent-state">Waiting</b>
+        </article>
+      </section>
+
+      <div class="content-grid">
+        <section class="chat-panel">
+          <div id="messages" class="messages">
+            <div class="empty-state" id="emptyState">
+              <div class="empty-orbit"><span>GC</span></div>
+              <h3>Start with a scenario or just talk to support.</h3>
+              <p>The conversation can collect missing details across turns. Only typed semantic context and customer-grounded facts are remembered.</p>
+            </div>
+          </div>
+
+          <form id="composer" class="composer">
+            <textarea id="messageInput" rows="1" placeholder="Say hi, describe an issue, or provide an order number…"></textarea>
+            <button id="sendButton" type="submit" class="send-button" aria-label="Send message">↑</button>
+          </form>
+          <p class="composer-hint">Trace shows intake classification, tools, trusted outputs and guardrails. Hidden model reasoning is never exposed.</p>
+        </section>
+
+        <aside class="trace-panel">
+          <div class="trace-header">
+            <div><p class="section-label">EXECUTION TRACE</p><h3>How the system handled this turn</h3></div>
+            <button id="clearTrace" class="icon-button" title="Clear trace">↺</button>
+          </div>
+          <div id="traceContent" class="trace-content">
+            <div class="trace-placeholder">
+              <div class="trace-placeholder-icon">⌁</div>
+              <strong>No turn yet</strong>
+              <span>Intake, tool calls and handoffs will appear here.</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <template id="typingTemplate">
+    <div class="message-row assistant typing-row"><div class="avatar">GC</div><div class="bubble typing"><i></i><i></i><i></i></div></div>
+  </template>
+
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
