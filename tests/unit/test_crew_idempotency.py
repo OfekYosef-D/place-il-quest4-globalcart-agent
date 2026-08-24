@@ -59,8 +59,6 @@ def test_same_refund_across_two_turns_executes_irreversible_tool_once():
     assert first.result.decision.refund_id == "RF-TEST"
     assert second.result.decision.refund_id == "RF-TEST"
 
-    # The supplied irreversible mock was reached exactly once. The second
-    # process_refund call was satisfied by the adapter's trusted idempotent replay.
     actual_refund_calls = [args for name, args in module.calls if name == "process_refund"]
     assert actual_refund_calls == [
         {"order_id": "ORD-1001", "amount": 35.0, "reason": "damaged_on_arrival"}
@@ -73,3 +71,26 @@ def test_same_refund_across_two_turns_executes_irreversible_tool_once():
     ][0]
     assert replay["idempotent_replay"] is True
     assert replay["refund_id"] == "RF-TEST"
+
+
+def test_existing_approved_refund_is_not_replayed_for_different_parameters():
+    module = _module(high_risk=False)
+    toolkits = CrewToolKits(module)
+
+    first = toolkits.decision.call(
+        "process_refund",
+        order_id="ORD-1001",
+        amount=35.0,
+        reason="damaged_on_arrival",
+    )
+    second = toolkits.decision.call(
+        "process_refund",
+        order_id="ORD-1001",
+        amount=10.0,
+        reason="damaged_on_arrival",
+    )
+
+    assert first["status"] == "APPROVED"
+    assert second["error"] == "REFUND_ALREADY_APPROVED_DIFFERENT_REQUEST"
+    assert second["existing_refund_id"] == "RF-TEST"
+    assert [name for name, _ in module.calls].count("process_refund") == 1
