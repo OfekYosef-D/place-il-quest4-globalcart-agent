@@ -39,7 +39,6 @@ class SpecialistRun:
 
 ToolGuard = Callable[[str, dict, SpecialistRun], tuple[bool, str | None]]
 StopCondition = Callable[[SpecialistRun], bool]
-AfterTool = Callable[[str, dict, dict | None, str, SpecialistRun], None]
 
 
 class SpecialistAgent:
@@ -70,7 +69,6 @@ class SpecialistAgent:
         *,
         guard: ToolGuard | None = None,
         stop_when: StopCondition | None = None,
-        after_tool: AfterTool | None = None,
     ) -> SpecialistRun:
         run = SpecialistRun(
             role=self.role,
@@ -137,7 +135,6 @@ class SpecialistAgent:
             )
             for call in response.tool_calls:
                 arguments = dict(call.arguments or {})
-                executed = False
                 if call.raw_arguments is not None:
                     result = {
                         "error": "INVALID_ARGUMENTS",
@@ -191,23 +188,8 @@ class SpecialistAgent:
                         )
                     else:
                         result = self._execute(call.name, arguments, run)
-                        executed = True
                 else:
                     result = self._execute(call.name, arguments, run)
-                    executed = True
-
-                if executed and after_tool is not None:
-                    interaction = run.interactions[-1]
-                    try:
-                        after_tool(
-                            call.name,
-                            arguments,
-                            result,
-                            interaction.outcome,
-                            run,
-                        )
-                    except Exception as exc:
-                        run.failure_reason = f"POST_TOOL_OBSERVER_FAILURE: {call.name}: {exc}"
 
                 run.messages.append(
                     ToolObservationMessage(
