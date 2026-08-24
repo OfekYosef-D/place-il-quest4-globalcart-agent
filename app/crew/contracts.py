@@ -17,7 +17,7 @@ CrewStatus = Literal["COMPLETED", "NEEDS_CLARIFICATION", "ESCALATED", "FAILED_SA
 
 
 class RiskReport(BaseModel):
-    """Trusted Agent 1 -> Agent 2 handoff."""
+    """Trusted Agent 1 -> Agent 2 handoff, preserving the deterministic audit."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -25,6 +25,7 @@ class RiskReport(BaseModel):
     user_id: str
     risk_score: int = Field(ge=0, le=100)
     risk_band: RiskBand
+    action_hint: str | None = None
     triggered_rules: list[dict[str, Any]] = Field(default_factory=list)
     evidence: dict[str, Any] = Field(default_factory=dict)
     blocks_automatic_refund: bool
