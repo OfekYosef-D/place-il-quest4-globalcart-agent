@@ -8,14 +8,14 @@ from app.config import Settings
 from app.crew.config import CrewSettings
 from app.crew.orchestrator import GlobalCartCrew
 from app.crew.tools import CrewToolKits
-from tests.unit.fakes import FakeProvider, tool_call_response
+from tests.unit.fakes import FakeProvider, final_response, tool_call_response
 
 
 def _schema(name: str) -> dict:
     return {"name": name, "description": name, "input_schema": {"type": "object", "properties": {}}}
 
 
-def test_claimed_user_is_preserved_until_audit_reports_mismatch():
+def test_claimed_user_is_preserved_until_audit_reports_mismatch_even_after_premature_stop():
     calls: list[tuple[str, dict]] = []
 
     def order(**kwargs):
@@ -74,8 +74,9 @@ def test_claimed_user_is_preserved_until_audit_reports_mismatch():
 
     provider = FakeProvider(
         [
+            tool_call_response(("r1", "get_order_details", {"order_id": "ORD-1005"})),
+            final_response("I have enough information."),
             tool_call_response(
-                ("r1", "get_order_details", {"order_id": "ORD-1005"}),
                 ("r2", "get_user_profile", {"user_id": "USR-101"}),
                 ("r3", "audit_fraud_risk", {"order_id": "ORD-1005", "user_id": "USR-101"}),
             ),
@@ -93,7 +94,7 @@ def test_claimed_user_is_preserved_until_audit_reports_mismatch():
         ]
     )
     settings = Settings(llm_provider="groq", llm_model="fake", groq_api_key="x", llm_max_retries=0)
-    crew = GlobalCartCrew(settings, CrewSettings(specialist_max_steps=4), provider, CrewToolKits(module))
+    crew = GlobalCartCrew(settings, CrewSettings(specialist_max_steps=5), provider, CrewToolKits(module))
 
     run = crew.handle_customer_message("I am USR-101 and I need a refund for order ORD-1005.")
 
