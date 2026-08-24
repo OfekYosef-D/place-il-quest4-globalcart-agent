@@ -15,10 +15,10 @@
     <div class="welcome-card">
       <div class="brand-mark">GC</div>
       <p class="eyebrow">PLACE IL · QUEST 4 · STAGE 2</p>
-      <h1>Watch a multi-agent crew resolve customer operations.</h1>
-      <p class="welcome-copy">Three capability-separated agents investigate, decide, and communicate. The interface replays observable tool execution and trusted handoffs — not private model chain-of-thought.</p>
+      <h1>Watch a guarded multi-agent support crew work.</h1>
+      <p class="welcome-copy">A no-tools intake layer understands the conversation first. Only grounded support cases reach the three capability-separated specialists. The interface replays observable execution facts — not private chain-of-thought.</p>
       <div class="welcome-agents">
-        <span>Research</span><i>→</i><span>Decision</span><i>→</i><span>Comms</span>
+        <span>Intake</span><i>→</i><span>Research</span><i>→</i><span>Decision</span><i>→</i><span>Comms</span>
       </div>
       <button id="startButton" class="primary-button large">Start a conversation <span>→</span></button>
     </div>
@@ -43,7 +43,7 @@
 
       <div class="sidebar-note">
         <span class="live-dot"></span>
-        <div><strong>Live runtime</strong><small>Same Python crew as the CLI</small></div>
+        <div><strong>Live runtime</strong><small>Typed session context · guarded side effects</small></div>
       </div>
     </aside>
 
@@ -56,7 +56,7 @@
         <div id="caseStatus" class="status-chip idle"><span></span> Ready</div>
       </header>
 
-      <section class="pipeline" aria-label="Agent pipeline">
+      <section class="pipeline" aria-label="Specialist agent pipeline">
         <article class="agent-node" data-agent="researcher">
           <div class="agent-icon">01</div>
           <div><span>Researcher</span><small>Fraud & evidence</small></div>
@@ -81,28 +81,28 @@
           <div id="messages" class="messages">
             <div class="empty-state" id="emptyState">
               <div class="empty-orbit"><span>GC</span></div>
-              <h3>Start with a scenario or write your own case.</h3>
-              <p>Every message launches a fresh Stage 2 crew execution and visualizes what each specialist actually did.</p>
+              <h3>Start with a scenario or just talk to support.</h3>
+              <p>The conversation can collect missing details across turns. Only typed semantic context and customer-grounded facts are remembered.</p>
             </div>
           </div>
 
           <form id="composer" class="composer">
-            <textarea id="messageInput" rows="1" placeholder="Describe a customer issue… e.g. Order ORD-1001 arrived damaged"></textarea>
-            <button id="sendButton" type="submit" class="send-button" aria-label="Send case">↑</button>
+            <textarea id="messageInput" rows="1" placeholder="Say hi, describe an issue, or provide an order number…"></textarea>
+            <button id="sendButton" type="submit" class="send-button" aria-label="Send message">↑</button>
           </form>
-          <p class="composer-hint">Execution trace shows tools, trusted outputs and guardrails. Hidden model reasoning is never exposed.</p>
+          <p class="composer-hint">Trace shows intake classification, tools, trusted outputs and guardrails. Hidden model reasoning is never exposed.</p>
         </section>
 
         <aside class="trace-panel">
           <div class="trace-header">
-            <div><p class="section-label">EXECUTION TRACE</p><h3>How the crew worked</h3></div>
+            <div><p class="section-label">EXECUTION TRACE</p><h3>How the system handled this turn</h3></div>
             <button id="clearTrace" class="icon-button" title="Clear trace">↺</button>
           </div>
           <div id="traceContent" class="trace-content">
             <div class="trace-placeholder">
               <div class="trace-placeholder-icon">⌁</div>
-              <strong>No run yet</strong>
-              <span>Tool calls and handoffs will appear here.</span>
+              <strong>No turn yet</strong>
+              <span>Intake, tool calls and handoffs will appear here.</span>
             </div>
           </div>
         </aside>
