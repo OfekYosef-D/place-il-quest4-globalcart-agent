@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from app.llm.base import ModelResponse, ToolCallRequest
 
 
@@ -67,4 +69,28 @@ def final_response(content: str) -> ModelResponse:
         output_tokens=5,
         total_tokens=15,
         latency_ms=1.0,
+    )
+
+
+def intake_response(
+    *,
+    intent: str = "SUPPORT_CASE",
+    support_goal: str = "REFUND",
+    case_reason: str = "damaged_on_arrival",
+    reason_evidence: str | None = "damaged",
+    issue_summary: str = "Customer reports an order issue.",
+) -> ModelResponse:
+    """Build the no-tools structured semantic intake response used by Stage 2 tests."""
+    if case_reason == "unknown":
+        reason_evidence = None
+    return final_response(
+        json.dumps(
+            {
+                "intent": intent,
+                "support_goal": support_goal,
+                "case_reason": case_reason,
+                "reason_evidence": reason_evidence,
+                "issue_summary": issue_summary,
+            }
+        )
     )
