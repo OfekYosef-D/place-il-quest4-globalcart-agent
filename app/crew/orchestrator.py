@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
 from app.config import Settings
 from app.crew.config import CrewSettings
@@ -174,33 +173,42 @@ class GlobalCartCrew:
         def guard(name: str, args: dict, run: SpecialistRun) -> tuple[bool, str | None]:
             order = latest_result(run, "get_order_details")
             profile = latest_result(run, "get_user_profile")
+
             if name == "get_order_details":
                 if order is not None:
                     return False, "ORDER_LOOKUP_ALREADY_COMPLETED"
                 if claimed_order and str(args.get("order_id", "")).upper() != claimed_order:
                     return False, "ORDER_ID_NOT_FROM_CUSTOMER_REQUEST"
                 return True, None
+
             if name == "get_user_profile":
                 if not isinstance(order, dict) or "error" in order:
                     return False, "ORDER_MUST_BE_VERIFIED_FIRST"
                 if profile is not None:
                     return False, "USER_LOOKUP_ALREADY_COMPLETED"
-                if args.get("user_id") != order.get("user_id"):
-                    return False, "USER_ID_MUST_COME_FROM_VERIFIED_ORDER"
+                expected_user = claimed_user or order.get("user_id")
+                if args.get("user_id") != expected_user:
+                    return False, "USER_ID_MUST_PRESERVE_CUSTOMER_CLAIM"
                 return True, None
+
             if name == "audit_fraud_risk":
-                if not isinstance(order, dict) or "error" in order or not isinstance(profile, dict) or "error" in profile:
-                    return False, "ORDER_AND_USER_MUST_BE_VERIFIED_FIRST"
+                if not isinstance(order, dict) or "error" in order:
+                    return False, "ORDER_MUST_BE_VERIFIED_FIRST"
+                if not isinstance(profile, dict) or "error" in profile:
+                    return False, "USER_MUST_BE_VERIFIED_FIRST"
                 if args.get("order_id") != order.get("order_id"):
                     return False, "AUDIT_ORDER_MUST_MATCH_VERIFIED_ORDER"
+                expected_user = claimed_user or order.get("user_id")
                 audit_user = args.get("user_id")
-                allowed_users = {order.get("user_id")}
-                if claimed_user:
-                    allowed_users.add(claimed_user)
-                if audit_user is not None and audit_user not in allowed_users:
-                    return False, "AUDIT_USER_ID_NOT_GROUNDED"
+                if audit_user is None:
+                    if claimed_user:
+                        return False, "AUDIT_MUST_INCLUDE_CLAIMED_USER_ID"
+                elif audit_user != expected_user:
+                    return False, "AUDIT_USER_ID_MUST_PRESERVE_CUSTOMER_CLAIM"
                 return True, None
+
             return True, None
+
         return guard
 
     @staticmethod
@@ -231,6 +239,7 @@ class GlobalCartCrew:
                     return False, "REFUND_AMOUNT_MUST_MATCH_CUSTOMER_REQUEST"
                 return True, None
             return True, None
+
         return guard
 
     @staticmethod
@@ -251,6 +260,7 @@ class GlobalCartCrew:
                     if args.get(key) != value:
                         return False, f"ROUTE_{key.upper()}_MUST_MATCH_DECISION"
                 return True, None
+
             if name == "send_slack_alert":
                 prior_alert = latest_result(run, "send_slack_alert")
                 if prior_alert is not None:
@@ -275,7 +285,9 @@ class GlobalCartCrew:
                     if payload.get(key) != value:
                         return False, f"ALERT_{key.upper()}_MUST_MATCH_DECISION"
                 return True, None
+
             return True, None
+
         return guard
 
     def _run_mismatch_escalation(
