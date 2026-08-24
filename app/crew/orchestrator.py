@@ -68,6 +68,23 @@ class GlobalCartCrew:
         claimed_order = _first_prefixed_token(text, "ORD-")
         claimed_user = _first_prefixed_token(text, "USR-")
 
+        # An order identifier is the root trusted identifier for this workflow.
+        # Do not let a probabilistic model invent one when the customer supplied none.
+        if claimed_order is None:
+            return CrewRun(
+                result=CrewResult(
+                    status="NEEDS_CLARIFICATION",
+                    communication=CommunicationResult(
+                        customer_response=(
+                            "Please provide your order number in the format ORD-1234 so I can review your request."
+                        ),
+                        escalation_required=False,
+                    ),
+                    stop_reason="ORDER_ID_REQUIRED",
+                ),
+                trace=trace,
+            )
+
         trace.researcher = self.researcher.run(
             _research_task(text),
             guard=self._research_guard(claimed_order, claimed_user),
@@ -78,12 +95,11 @@ class GlobalCartCrew:
         audit_result = latest_result(trace.researcher, "audit_fraud_risk")
 
         if isinstance(order_result, dict) and order_result.get("error") == "ORDER_NOT_FOUND":
-            order_id = claimed_order or "the provided order"
             return CrewRun(
                 result=CrewResult(
                     status="NEEDS_CLARIFICATION",
                     communication=CommunicationResult(
-                        customer_response=f"I couldn't find order {order_id}. Please check the order number and send it again.",
+                        customer_response=f"I couldn't find order {claimed_order}. Please check the order number and send it again.",
                         escalation_required=False,
                     ),
                     stop_reason="ORDER_NOT_FOUND",
