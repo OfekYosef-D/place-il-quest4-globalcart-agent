@@ -9,6 +9,7 @@ def test_web_demo_assets_and_routes_exist():
     web_dir = Path(web_app.WEB_DIR)
     assert (web_dir / "index.html").is_file()
     assert (web_dir / "styles.css").is_file()
+    assert (web_dir / "polish.css").is_file()
     assert (web_dir / "app.js").is_file()
     paths = {route.path for route in web_app.app.routes}
     assert "/" in paths
@@ -25,4 +26,5 @@ def test_demo_catalog_covers_core_stage2_cases():
         "missing-laptop",
         "identity-mismatch",
         "unknown-order",
+        "missing-order-id",
     }
