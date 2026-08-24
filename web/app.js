@@ -2,6 +2,7 @@ const state = {
   busy: false,
   scenarios: [],
   activeScenarioId: null,
+  sessionId: null,
 };
 
 const els = {
@@ -39,11 +40,10 @@ function setBusy(value) {
   els.sendButton.disabled = value;
   els.input.disabled = value;
   if (value) {
-    els.pipeline.classList.add("active");
-    setStatus("running", "Crew running");
+    setStatus("running", "Understanding request");
     agentNodes.forEach((node) => {
       node.className = "agent-node not-started";
-      node.querySelector(".agent-state").textContent = "Awaiting trace";
+      node.querySelector(".agent-state").textContent = "Not started";
     });
   }
 }
@@ -55,21 +55,34 @@ function setActiveScenario(id) {
   });
 }
 
-function clearConversation() {
+async function createConversationSession() {
+  const response = await fetch("/api/session", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok || !data.session_id) throw new Error("Could not create conversation session");
+  state.sessionId = data.session_id;
+}
+
+function resetConversationView() {
   els.messages.innerHTML = "";
   const empty = document.createElement("div");
   empty.className = "empty-state";
   empty.id = "emptyState";
   empty.innerHTML = `
     <div class="empty-orbit"><span>GC</span></div>
-    <h3>Start with a scenario or write your own case.</h3>
-    <p>Every message launches a fresh Stage 2 crew execution and visualizes what each specialist actually did.</p>`;
+    <h3>Start with a scenario or write your own message.</h3>
+    <p>The intake layer understands the conversation first. Only a grounded support case can launch the specialist crew.</p>`;
   els.messages.appendChild(empty);
-  els.trace.innerHTML = `<div class="trace-placeholder"><div class="trace-placeholder-icon">⌁</div><strong>No run yet</strong><span>Tool calls and handoffs will appear here.</span></div>`;
+  els.trace.innerHTML = `<div class="trace-placeholder"><div class="trace-placeholder-icon">⌁</div><strong>No run yet</strong><span>Intake, tool calls and trusted handoffs will appear here.</span></div>`;
   resetPipeline();
   setStatus("idle", "Ready");
   setActiveScenario(null);
   els.input.value = "";
+}
+
+async function startNewConversation() {
+  if (state.busy) return;
+  await createConversationSession();
+  resetConversationView();
   els.input.focus();
 }
 
@@ -140,6 +153,7 @@ function renderRuntimeSummary(data) {
   summary.className = "runtime-summary";
   const fields = [
     ["Case status", data.status.replaceAll("_", " ")],
+    ["Intake", data.intake?.assessment?.intent || (data.intake?.failure ? "FAILED" : "—")],
     ["Escalation", data.communication?.escalation_required ? "Required" : "No"],
     ["Trusted stop", data.stop_reason || "Normal completion"],
   ];
@@ -156,18 +170,61 @@ function renderRuntimeSummary(data) {
   return summary;
 }
 
+function renderIntake(data) {
+  if (!data.intake) return null;
+  const card = document.createElement("section");
+  card.className = "handoff-card intake-card";
+  const label = document.createElement("p");
+  label.className = "section-label";
+  label.textContent = "CONVERSATION INTAKE · NO TOOLS / NO BUSINESS AUTHORITY";
+  card.appendChild(label);
+
+  if (data.intake.failure) {
+    const failure = document.createElement("div");
+    failure.className = "guardrail-note";
+    failure.textContent = `Intake failed closed: ${data.intake.failure}`;
+    card.appendChild(failure);
+    return card;
+  }
+
+  const assessment = data.intake.assessment;
+  if (!assessment) return card;
+  const grid = document.createElement("div");
+  grid.className = "metric-grid";
+  grid.append(
+    makeMetric("Intent", assessment.intent),
+    makeMetric("Goal", assessment.support_goal),
+    makeMetric("Case reason", assessment.case_reason),
+    makeMetric("Tools exposed", "No", "success")
+  );
+  card.appendChild(grid);
+  if (assessment.issue_summary) {
+    const summary = document.createElement("p");
+    summary.className = "intake-summary";
+    summary.textContent = assessment.issue_summary;
+    card.appendChild(summary);
+  }
+  return card;
+}
+
 function renderRuntimeStop(data) {
   if (!data.stop_reason) return null;
   const descriptions = {
-    ORDER_ID_REQUIRED: "No customer-grounded order identifier was supplied. The deterministic boundary stopped execution before any LLM or tool call could invent one.",
+    INTAKE_GREETING: "The intake layer recognized a conversational greeting. No specialist agent or business tool was started.",
+    ORDER_ID_REQUIRED: "The intake layer recognized a support case, but deterministic grounding found no customer-supplied order id. The specialist crew was not started.",
+    MULTIPLE_ORDER_IDS: "More than one order id was grounded in the current request. The runtime refused to choose one on the customer's behalf.",
+    MULTIPLE_USER_IDS: "More than one customer id was grounded. The runtime refused to guess which identity should control the case.",
+    MULTIPLE_REQUESTED_AMOUNTS: "More than one refund amount was grounded. The runtime requires one unambiguous amount before financial action.",
+    RETURN_REASON_REQUIRED: "The order was grounded, but the reason could not be safely resolved from customer evidence or trusted order data.",
     ORDER_NOT_FOUND: "The trusted order lookup returned ORDER_NOT_FOUND, so the crew stopped instead of guessing another order.",
     USER_ORDER_MISMATCH: "The trusted fraud audit detected an order/user mismatch. Decision authority was never reached.",
+    ORDER_STATUS_RESOLVED: "This was a status-only intent. The Researcher used only the order lookup; fraud, policy and refund agents were not needed.",
   };
   const card = document.createElement("section");
   card.className = "runtime-stop-card";
   const label = document.createElement("span");
   label.className = "stop-label";
-  label.textContent = "Deterministic runtime boundary";
+  label.textContent = "Trusted runtime boundary";
   const strong = document.createElement("strong");
   strong.textContent = data.stop_reason;
   const copy = document.createElement("p");
@@ -284,6 +341,8 @@ function renderAgent(agent) {
 function renderExecution(data) {
   els.trace.innerHTML = "";
   els.trace.appendChild(renderRuntimeSummary(data));
+  const intake = renderIntake(data);
+  if (intake) els.trace.appendChild(intake);
   const stop = renderRuntimeStop(data);
   if (stop) els.trace.appendChild(stop);
   els.trace.appendChild(renderHandoffs(data));
@@ -298,7 +357,6 @@ function renderExecution(data) {
     stateNode.textContent = status === "completed" ? "Done" : status === "failed" ? "Failed" : "Not run";
   });
 
-  els.pipeline.classList.remove("active");
   if (data.status === "COMPLETED") setStatus("success", "Completed");
   else if (data.status === "ESCALATED" || data.status === "NEEDS_CLARIFICATION") setStatus("escalated", data.status.replaceAll("_", " "));
   else setStatus("failed", data.status.replaceAll("_", " "));
@@ -306,7 +364,8 @@ function renderExecution(data) {
 
 async function runCase(message) {
   if (state.busy || !message.trim()) return;
-  appendMessage("user", message.trim(), "Customer case");
+  if (!state.sessionId) await createConversationSession();
+  appendMessage("user", message.trim(), "Customer message");
   showTyping();
   setBusy(true);
 
@@ -314,10 +373,11 @@ async function runCase(message) {
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: message.trim() }),
+      body: JSON.stringify({ message: message.trim(), session_id: state.sessionId }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || "Crew request failed");
+    state.sessionId = data.session_id || state.sessionId;
     hideTyping();
     appendMessage("assistant", data.customer_response, data.status.replaceAll("_", " "));
     renderExecution(data);
@@ -346,7 +406,10 @@ function renderScenarios() {
     const subtitle = document.createElement("span");
     subtitle.textContent = scenario.subtitle;
     button.append(title, subtitle);
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      if (state.busy) return;
+      await createConversationSession();
+      resetConversationView();
       setActiveScenario(scenario.id);
       els.input.value = scenario.message;
       runCase(scenario.message);
@@ -366,13 +429,14 @@ async function loadScenarios() {
   }
 }
 
-els.startButton.addEventListener("click", () => {
+els.startButton.addEventListener("click", async () => {
   els.welcome.classList.add("hidden");
+  if (!state.sessionId) await createConversationSession();
   window.setTimeout(() => els.input.focus(), 360);
 });
-els.newCaseButton.addEventListener("click", clearConversation);
+els.newCaseButton.addEventListener("click", startNewConversation);
 els.clearTrace.addEventListener("click", () => {
-  els.trace.innerHTML = `<div class="trace-placeholder"><div class="trace-placeholder-icon">⌁</div><strong>Trace cleared</strong><span>Run another case to inspect the crew.</span></div>`;
+  els.trace.innerHTML = `<div class="trace-placeholder"><div class="trace-placeholder-icon">⌁</div><strong>Trace cleared</strong><span>Send another message to inspect the next turn.</span></div>`;
   resetPipeline();
 });
 els.composer.addEventListener("submit", (event) => {
