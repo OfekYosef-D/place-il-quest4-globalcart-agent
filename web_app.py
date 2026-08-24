@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -94,7 +96,10 @@ def run_case(payload: CaseRequest):
 
 
 def main() -> None:
-    uvicorn.run("web_app:app", host="127.0.0.1", port=8000, reload=False)
+    load_dotenv()
+    host = os.getenv("WEB_HOST", "127.0.0.1")
+    port = int(os.getenv("WEB_PORT", "8000"))
+    uvicorn.run("web_app:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":
