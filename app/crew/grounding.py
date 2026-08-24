@@ -14,9 +14,11 @@ from dataclasses import dataclass
 
 _ORDER_RE = re.compile(r"(?<![A-Z0-9])ORD-\d+(?!\d)", re.IGNORECASE)
 _USER_RE = re.compile(r"(?<![A-Z0-9])USR-\d+(?!\d)", re.IGNORECASE)
+_NUMBER = r"-?\d[\d,]*(?:\.\d{1,2})?"
 _MONEY_PATTERNS = (
-    re.compile(r"\$\s*(-?\d+(?:\.\d{1,2})?)", re.IGNORECASE),
-    re.compile(r"(?<![\d.])(-?\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)\b", re.IGNORECASE),
+    re.compile(rf"\$\s*({_NUMBER})", re.IGNORECASE),
+    re.compile(rf"\bUSD\s*\$?\s*({_NUMBER})", re.IGNORECASE),
+    re.compile(rf"(?<![\d.])({_NUMBER})\s*(?:USD|dollars?)\b", re.IGNORECASE),
 )
 
 
@@ -48,7 +50,7 @@ def ground_customer_text(text: str) -> GroundedCustomerFacts:
     for pattern in _MONEY_PATTERNS:
         for match in pattern.finditer(text):
             try:
-                value = round(float(match.group(1)), 2)
+                value = round(float(match.group(1).replace(",", "")), 2)
             except (TypeError, ValueError):
                 continue
             if value not in amounts:
