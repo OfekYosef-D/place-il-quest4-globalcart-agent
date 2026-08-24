@@ -56,31 +56,41 @@ class RoleToolKit:
         if name != "process_refund" or self._refund_ledger is None:
             return registry[name](**arguments)
 
-        # Atomic process-local idempotency around the irreversible side effect.
-        # The official starter tool remains untouched; this adapter only decides
-        # whether the side effect may be invoked at all.
         order_id = str(arguments.get("order_id") or "")
         reason = str(arguments.get("reason") or "")
         try:
-            amount = float(arguments.get("amount"))
+            amount = round(float(arguments.get("amount")), 2)
         except (TypeError, ValueError):
-            # Let the supplied tool own ordinary argument/business validation.
             return registry[name](**arguments)
 
         reserved, block_reason = self._refund_ledger.reserve(order_id, amount, reason)
         if not reserved:
             existing = self._refund_ledger.get(order_id)
             if existing is not None and existing.status == "APPROVED":
-                # Idempotent replay: report the already-established business
-                # outcome without calling the irreversible starter tool again.
+                same_request = (
+                    abs(existing.amount - amount) <= 0.001
+                    and existing.reason == reason
+                )
+                if same_request:
+                    return {
+                        "status": "APPROVED",
+                        "order_id": order_id,
+                        "requested_amount": existing.amount,
+                        "approved_amount": existing.amount,
+                        "refund_id": existing.refund_id,
+                        "reasons": ["idempotent replay of an already approved refund"],
+                        "idempotent_replay": True,
+                    }
                 return {
-                    "status": "APPROVED",
+                    "error": "REFUND_ALREADY_APPROVED_DIFFERENT_REQUEST",
+                    "message": (
+                        "This order already has an approved refund with different "
+                        "refund parameters. No new refund was executed."
+                    ),
                     "order_id": order_id,
-                    "requested_amount": existing.amount,
-                    "approved_amount": existing.amount,
-                    "refund_id": existing.refund_id,
-                    "reasons": ["idempotent replay of an already approved refund"],
-                    "idempotent_replay": True,
+                    "existing_refund_id": existing.refund_id,
+                    "existing_amount": existing.amount,
+                    "existing_reason": existing.reason,
                 }
             return {
                 "error": "DUPLICATE_REFUND_BLOCKED",
