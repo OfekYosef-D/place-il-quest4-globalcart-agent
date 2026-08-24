@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
 
-from app.crew.effects import RefundExecutionLedger
+from app.crew.effects import AlertExecutionLedger, RefundExecutionLedger
 
 Role = Literal["researcher", "decision", "comms"]
 
@@ -28,12 +29,14 @@ class RoleToolKit:
         schemas: list[dict[str, Any]],
         *,
         refund_ledger: RefundExecutionLedger | None = None,
+        alert_ledger: AlertExecutionLedger | None = None,
     ) -> None:
         self._module = module
         self.role = role
         self._schemas = copy.deepcopy(schemas)
         self._tool_names = frozenset(schema["name"] for schema in schemas)
         self._refund_ledger = refund_ledger
+        self._alert_ledger = alert_ledger
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
@@ -52,6 +55,25 @@ class RoleToolKit:
         registry = self._module.TOOL_REGISTRY
         if name not in registry:
             raise CrewToolKitError(f"Starter-kit registry has no tool {name!r}.")
+
+        if name == "send_slack_alert" and self._alert_ledger is not None:
+            signature = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)
+            reserved, replay = self._alert_ledger.reserve(signature)
+            if not reserved:
+                if replay is not None:
+                    replay["idempotent_replay"] = True
+                    return replay
+                return {
+                    "error": "DUPLICATE_ALERT_BLOCKED",
+                    "message": "An identical alert is already being delivered.",
+                }
+            try:
+                result = registry[name](**arguments)
+            except Exception:
+                self._alert_ledger.finalize(signature, None)
+                raise
+            self._alert_ledger.finalize(signature, result)
+            return result
 
         if name != "process_refund" or self._refund_ledger is None:
             return registry[name](**arguments)
@@ -112,6 +134,7 @@ class CrewToolKits:
     def __init__(self, module: ModuleType) -> None:
         self.module = module
         self.refund_ledger = RefundExecutionLedger()
+        self.alert_ledger = AlertExecutionLedger()
         self.researcher = RoleToolKit(module, "researcher", module.RESEARCHER_TOOLS)
         self.decision = RoleToolKit(
             module,
@@ -119,7 +142,12 @@ class CrewToolKits:
             module.DECISION_TOOLS,
             refund_ledger=self.refund_ledger,
         )
-        self.comms = RoleToolKit(module, "comms", module.COMMS_TOOLS)
+        self.comms = RoleToolKit(
+            module,
+            "comms",
+            module.COMMS_TOOLS,
+            alert_ledger=self.alert_ledger,
+        )
 
 
 def load_crew_toolkits(starter_kit_path: str | Path) -> CrewToolKits:
