@@ -1,276 +1,282 @@
-# GlobalCart Operations Resolver Agent
+# GlobalCart Multi-Agent Operations Crew
 
-**Place IL Quest 4 — Stage 1**
+**Place IL Quest 4 — Stage 2**  
+Stage 1 remains intact as the single-agent baseline; Stage 2 adds a capability-separated three-agent crew, typed handoffs, deterministic guardrails, external escalation, and an interactive execution-trace demo.
 
-A single autonomous customer-operations agent for the fictional GlobalCart retail environment. The LLM decides what the customer needs, which supplied tool to call next, and when it has enough evidence to stop. Deterministic Python owns execution authority, trusted state, irreversible business outcomes, customer-facing safety, loop bounds, and fail-safe behavior.
+> **Probabilistic intelligence, deterministic guardrails.**  
+> The LLM chooses the next useful action. Python controls authority. Supplied tools determine business truth.
 
-> **Probabilistic intelligence, deterministic guardrails.**
->
-> The model decides what to do. Trusted code decides what actually happened.
+## What Stage 2 adds
 
-## Submission status
+GlobalCart now resolves customer-operations cases through three real specialists:
 
-**Submission-ready.** The final post-review runtime passed every deterministic and live gate:
+| Agent | Responsibility | Tools it can physically access | Trusted handoff |
+| --- | --- | --- | --- |
+| **Researcher & Fraud Auditor** | Verify the case and investigate fraud risk | `get_order_details`, `get_user_profile`, `audit_fraud_risk` | `RiskReport` |
+| **Decision Maker / Ops Lead** | Evaluate return policy and refund authority | `check_return_policy`, `process_refund` | `DecisionHandoff` |
+| **Communications & Escalation** | Resolve escalation route and external alert | `get_escalation_route`, `send_slack_alert` | `CommunicationResult` |
 
-```text
-project tests:          215 passed
-supplied verifier:      33/33 passed
-eval dry-run:           green
-final live catalog:     10/10 CLEAN_PASS
-warnings:               0
-critical failures:      0
-Scenario 8 probes:      5/5 CLEAN_PASS
-repair rate:            0%
-release gate:           PASS
-```
-
-The final live run was executed against runtime commit:
-
-```text
-385e307e3526cc906bddf3675d2677da6c4a480c
-```
-
-It included all nine Stage 1 business scenarios plus the project-owned Hebrew end-to-end authority-boundary smoke. Average duration was **15.06 s**, average total tokens **9,912.5**, average tool calls **3.0**, and the maximum passing step count was **4**.
-
-Automated review had previously identified one real gap: a `NEEDS_CLARIFICATION` draft could bypass terminal rendering and carry unsupported free-form business claims. The fix is structural, not phrase-specific: clarification responses are runtime-rendered from trusted state, and unresolved clarification cases are canonicalized to `NO_ACTION`. The final live run above validates the post-review runtime.
+The agents do **not** share one giant chat history. Each receives its own prompt, its own working memory, only its role-specific tools, and a strict Pydantic handoff from the previous stage.
 
 ## Architecture
 
-```text
-Customer / CLI
-      |
-      v
-Autonomous LLM loop
-  understand request
-  choose next supplied tool
-  decide when enough evidence exists
-      |
-      v
-Guarded ToolExecutor
-      |
-      v
-Supplied TOOL_SCHEMAS + TOOL_REGISTRY
-      |
-      v
-Trusted AgentState / CaseState
-      |
-      v
-Deterministic outcome projector
-      |
-      v
-Canonical CaseResult
-      |
-      v
-Deterministic customer renderer
-  terminal facts + clarification safety
-      |
-      v
-Structural/evidence validator
-      |
-      v
-Structured AgentResult
+```mermaid
+flowchart LR
+    C[Customer Case] --> R[Researcher]
+    R -->|trusted audit| RP[RiskReport projector]
+    RP --> RR[RiskReport]
+    RR --> D[Decision Agent]
+    D -->|policy / refund evidence| DP[Decision projector]
+    DP --> DH[DecisionHandoff]
+    DH --> M[Comms Agent]
+    M --> RT[get_escalation_route]
+    RT --> Q{Escalation?}
+    Q -->|No| CR[Safe customer response]
+    Q -->|Yes| SA[send_slack_alert]
+    SA --> OUT[Slack / deterministic outbox]
+    SA --> CR
 ```
 
-There is **no hardcoded `order -> user -> policy -> refund` workflow**. The model owns tool selection and ordering. Runtime code enforces only safety/consistency boundaries and maps trusted tool evidence into business truth.
+There is intentionally **no supervisor LLM** and no LangGraph dependency. The specialist order is known in advance, so a small deterministic `GlobalCartCrew` orchestrator is easier to audit and cheaper to run. The agents remain autonomous *inside* their authority boundary: they choose which allowed tool to call and when, while Python prevents unsafe or unsupported transitions.
 
-### Authority boundary
-
-The LLM owns:
-
-- issue understanding;
-- tool selection and ordering;
-- deciding whether clarification is required;
-- sentiment and urgency assessment for internal tone metadata;
-- concise developer-facing reasoning.
-
-Deterministic code owns:
-
-- the tool allowlist and dispatch;
-- argument validation and deterministic caching;
-- the `process_refund` precondition;
-- trusted state;
-- exact terminal decisions, refund amounts/IDs, and error codes;
-- safe customer-facing business/clarification wording;
-- retry, no-progress, and max-step bounds;
-- one bounded no-tools output repair;
-- fail-safe behavior.
-
-## Supplied tools
-
-The agent uses the four Stage 1 tools without modifying or reimplementing their business logic:
-
-- `get_order_details(order_id)`
-- `get_user_profile(user_id)`
-- `check_return_policy(order_id, reason)`
-- `process_refund(order_id, amount, reason)`
-
-The starter kit is loaded through the supplied `TOOL_SCHEMAS` and `TOOL_REGISTRY`. Business rules remain inside the supplied tool layer.
-
-## Guardrails that are code, not prompt text
-
-- `process_refund` is blocked unless the same order already has trusted `check_return_policy -> eligible=true` evidence.
-- `eligible=true` never means money moved; only `process_refund(status=APPROVED)` establishes a successful refund.
-- Full/requested refund amounts are passed unchanged. Automatic authority caps are never treated as permission to invent a smaller refund.
-- Ineligible policy outcomes terminate without calling `process_refund` merely to obtain another rejection.
-- `ORDER_NOT_FOUND` safely terminates that case instead of fabricating order data or chasing a minimum tool count.
-- `APPROVED`, `ESCALATION_REQUIRED`, `REJECTED`, ineligible-policy, and terminal-error outcomes are projected from trusted state; model-authored terminal fields cannot override them.
-- Terminal customer facts are rendered from canonical outcomes, so safety does not depend on matching phrases such as “refund approved” or translations of “will contact you”.
-- `NEEDS_CLARIFICATION` responses are also runtime-rendered. A free-form clarification draft cannot claim a refund, expose risk data, or promise future action.
-- Internal fraud/risk/profile signals never become customer-facing explanations.
-- Repeated deterministic calls are cache-served; no-progress cycles and maximum steps are bounded.
-- Only known transient LLM failures are retried; tool business errors are data, not infrastructure retries.
-- Malformed or inconsistent final output gets at most one no-new-tools repair pass, then fails safe.
-
-See [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md).
-
-## Structured output
-
-Every turn returns a strict Pydantic `AgentResult`:
+### The core ownership rule
 
 ```text
-AgentResult
-  status
-  reasoning_chain
-  action_taken
-    tools_called
-    cases[]
-  customer_response
+LLM              -> chooses actions inside its role
+Python runtime   -> executes, bounds and validates those actions
+Supplied tools   -> determine policy, fraud, refund and routing truth
+Projectors       -> convert trusted evidence into typed handoffs
+Presentation     -> exposes only safe terminal facts and execution trace
 ```
 
-The Quest-required top-level fields — `reasoning_chain`, `action_taken`, and `customer_response` — are always present.
+No order ID is special-cased. `ORD-1005` and `ORD-1012` both escalate because the generic supplied fraud audit returns `blocks_automatic_refund=true`, even though different fraud rules fired.
 
-Per-case decisions are:
+## Authority and guardrails
+
+These are enforced in code, not merely requested in prompts:
+
+- **Capability separation:** each specialist receives only its official tool bundle. Researcher and Comms cannot refund; Decision cannot send alerts.
+- **Grounded identifiers:** the Researcher cannot silently invent or switch order IDs. If the customer explicitly supplies a user ID, that claim is preserved through verification rather than silently replaced with another user.
+- **Evidence-complete research:** the Researcher cannot finish successfully before a real fraud-audit result or terminal business error exists. The runtime can reject premature completion without telling the model which tool to choose next.
+- **Fraud authority:** `blocks_automatic_refund=true` prevents `process_refund` from executing.
+- **Policy precondition:** a refund requires trusted `check_return_policy -> eligible=true` evidence for the same order.
+- **No refund splitting:** only one refund attempt is allowed, and its amount must match the grounded requested amount.
+- **No fabricated approval:** only `process_refund(status=APPROVED)` proves money moved.
+- **Trusted routing:** normal Slack alerts require a trusted escalation route; channel and severity must match that route.
+- **Identity mismatch:** `USER_ORDER_MISMATCH` is terminal, never retried with a different customer, never reaches the Decision agent, and goes to security review.
+- **Missing order:** `ORDER_NOT_FOUND` asks the customer to verify the order number instead of guessing another ID.
+- **Customer privacy:** fraud score, triggered rules and accusations never enter customer-facing wording.
+- **Bounded execution:** per-agent max steps, no-progress detection, retry bounds and fail-safe termination prevent loops.
+
+See [`docs/STAGE2_ARCHITECTURE.md`](docs/STAGE2_ARCHITECTURE.md) for the full boundary design.
+
+## Interactive frontend demo
+
+Stage 2 includes a lightweight FastAPI + vanilla HTML/CSS/JS demo. It runs the **same `GlobalCartCrew` runtime as the CLI** — there is no duplicate demo business logic.
+
+The UI provides:
+
+- a **Start conversation** experience;
+- predefined scenarios for the important Quest cases;
+- a free-form customer case input;
+- a visual `Researcher -> Decision -> Comms` pipeline;
+- `RiskReport` and `DecisionHandoff` cards;
+- every observable tool call and its trusted result;
+- visible guardrail blocks and terminal errors;
+- final customer response and escalation status.
+
+The execution panel intentionally does **not** expose private model chain-of-thought. It shows auditable system behavior: tool selection, arguments, trusted observations, guardrails and structured handoffs.
+
+Run it locally:
+
+```bash
+python web_app.py
+```
+
+Then open:
 
 ```text
-AUTO_REFUND_APPROVED
-REJECTED
-HUMAN_ESCALATION
-NO_ACTION
+http://127.0.0.1:8000
 ```
 
-## Requirement coverage
+This is the recommended interface for the Loom demo because the agent separation and handoffs are visible without reading terminal JSON.
 
-| Stage 1 expectation | Implementation evidence |
-| --- | --- |
-| One autonomous resolver agent | `OperationsResolverAgent` runs one model-controlled tool loop; no router/sub-agents |
-| Real supplied tools | `ToolKit` loads the supplied schemas/registry; `ToolExecutor` dispatches actual tool calls |
-| 2+ tools when feasible | Live scenarios use logical multi-tool flows; terminal errors stop safely instead of calling irrelevant tools |
-| Business decision | Trusted outcomes project to approve, reject, human escalation, or no action |
-| Parseable output | Strict Pydantic `AgentResult` with the required top-level fields |
-| Guardrails in code | Tool precondition, terminal projection, deterministic rendering, validator, bounded loops/retries |
-| Edge cases / hallucination safety | Deterministic tests + project live catalog + supplied 33-check verifier |
-| Clean engineering | Provider abstraction, typed state, isolated tools, CI, reproducible verification docs |
+## Critical live scenarios
 
-## Provider/model
+### 1. Clean refund — `ORD-1001`
 
-Provider selection is configuration behind `LLMProvider`.
-
-Selected Stage 1 path:
-
-```dotenv
-LLM_PROVIDER=openrouter
-LLM_MODEL=qwen/qwen3.5-397b-a17b
+```text
+Researcher -> risk 0 / low
+Decision   -> policy ELIGIBLE -> process_refund once -> APPROVED 35 USD
+Comms      -> no escalation
+Result     -> refund approved; no Slack alert
 ```
 
-`GroqProvider` remains as an alternate adapter, demonstrating that the agent runtime is not coupled to one gateway.
+### 2. High-risk damaged item — `ORD-1005`
 
-Normal autonomous calls keep tools available. Native JSON Schema is reserved for a verified **no-tools** repair call rather than assuming every route supports simultaneous tool calling and structured-output mode.
+```text
+Researcher -> risk 90 / high -> blocks automatic refund
+Decision   -> policy may be ELIGIBLE, but process_refund is not executed
+Comms      -> CH-FRAUD / critical -> alert
+Result     -> additional review; no refund issued
+```
 
-See [`docs/MODEL_SELECTION.md`](docs/MODEL_SELECTION.md).
+### 3. Different high-risk path — `ORD-1012`
+
+Different fraud rules produce risk `60/high`; the exact same generic high-risk guardrail blocks the 890 USD automatic refund and routes the case to security.
+
+### 4. Identity mismatch
+
+Customer claims `USR-101` for `ORD-1005`:
+
+```text
+get_order_details(ORD-1005)
+get_user_profile(USR-101)
+audit_fraud_risk(ORD-1005, USR-101) -> USER_ORDER_MISMATCH
+Decision agent -> skipped
+process_refund -> impossible
+Comms -> security escalation
+```
+
+### 5. Unknown order
+
+`ORD-9999` produces `ORDER_NOT_FOUND`; the crew stops and asks the customer to check the number. It does not probe nearby orders.
 
 ## Setup
 
-Python 3.11+ is required.
+Python 3.11+ is recommended.
 
 ```bash
 python -m pip install -r requirements-dev.txt
-bash scripts/bootstrap_upstream.sh
 ```
 
-The bootstrap script creates a git-ignored authorized checkout under `.vendor/` and runs the supplied verifier. The pinned Stage 1 source commit is:
-
-```text
-250a2e9e43189f8cf3e19260f633ed636996d68c
-```
-
-The current upstream `main` adds Stage 2 material on top of that commit; the Stage 1 files are unchanged.
-
-Copy `.env.example` to `.env` and add the local OpenRouter API key:
+Copy `.env.example` to `.env` and add the local model credential:
 
 ```dotenv
 LLM_PROVIDER=openrouter
 LLM_MODEL=qwen/qwen3.5-397b-a17b
 OPENROUTER_API_KEY=your-local-secret
-LLM_REASONING_EFFORT=
 ```
 
-`.env`, `.vendor/`, and generated `eval-results/` are git-ignored.
-
-## Run the agent
-
-One-shot:
+Bootstrap the supplied toolkits:
 
 ```bash
-python run_agent.py --message "My order ORD-1001 arrived damaged."
+bash scripts/bootstrap_upstream.sh
+bash scripts/bootstrap_stage2.sh
 ```
 
-Developer trace:
-
-```bash
-python run_agent.py --verbose --message "Order ORD-1002 arrived damaged. I paid $150 and want a full refund."
-```
-
-Interactive short-term conversation:
-
-```bash
-python run_agent.py --verbose
-```
-
-Example authority-boundary behavior:
+The Stage 2 bootstrap pins the official upstream commit and must finish with:
 
 ```text
-get_order_details(ORD-1002)
-check_return_policy(... damaged_on_arrival ...) -> ELIGIBLE
-process_refund(amount=150, ...) -> ESCALATION_REQUIRED
-customer -> additional review required; no refund issued
+All 51 checks passed. The crew's tool box is behaving as documented.
 ```
 
-English and Hebrew are supported at the customer presentation boundary. Internal enums, tool names, policy IDs, and developer traces remain in English.
+### Windows without working WSL/bash
+
+The starter kit only needs to exist at the configured path. The equivalent PowerShell bootstrap is:
+
+```powershell
+$vendor = ".vendor/place-il-quests-stage2"
+if (!(Test-Path "$vendor\.git")) {
+    git clone --filter=blob:none --no-checkout https://github.com/liraz-place-il/Quests.git $vendor
+}
+git -C $vendor sparse-checkout init --cone
+git -C $vendor sparse-checkout set "Quest 4/Stage 2"
+git -C $vendor fetch --depth 1 origin 6f8efa381de7f0a18b947534ae6a1a762f2d3391
+git -C $vendor checkout --detach 6f8efa381de7f0a18b947534ae6a1a762f2d3391
+python "$vendor/Quest 4/Stage 2/starter-kit/examples/verify_scenarios.py"
+```
+
+## CLI
+
+High-risk case:
+
+```bash
+python run_crew.py --verbose --message "This is USR-105, order ORD-1005. The tablet screen was smashed on arrival. Refund me the full 480 dollars."
+```
+
+Clean case:
+
+```bash
+python run_crew.py --verbose --message "Order ORD-1001 arrived damaged. Please refund 35 dollars."
+```
+
+Different high-risk case:
+
+```bash
+python run_crew.py --verbose --message "Order ORD-1012 arrived but the laptop was missing from the box. Please refund the full 890 dollars."
+```
+
+Identity mismatch:
+
+```bash
+python run_crew.py --verbose --message "I am USR-101 and I need a refund for order ORD-1005."
+```
 
 ## Verification
 
-Deterministic gate:
+Deterministic project gate:
 
 ```bash
 python -m pytest tests -q
-python ".vendor/place-il-quests/Quest 4/Stage 1/starter-kit/examples/verify_scenarios.py"
-python run_evals.py --dry-run
 ```
 
-Live gate:
+Official Stage 2 tool verifier:
 
 ```bash
-python run_evals.py --repetitions 1
+python ".vendor/place-il-quests-stage2/Quest 4/Stage 2/starter-kit/examples/verify_scenarios.py"
 ```
 
-The final post-review live gate passed **10/10 CLEAN_PASS**, **0 warnings**, **0 critical failures**, **0% repair rate**, and **5/5 clean Scenario 8 probes** at runtime commit `385e307e3526cc906bddf3675d2677da6c4a480c`.
+CI also runs the pinned Stage 1 verifier as a regression gate, the full project test suite, and the Stage 1 eval dry-run. Stage 1 continues to work through `run_agent.py`.
 
-The live scorer is deterministic — there is no evaluator LLM. It checks decisions, policy verdicts, trusted refund status, exact authority-boundary amounts, forbidden refund execution, hallucinated/missing cases, refund-precondition ordering, runtime failures/loops, repairs, caching/tool efficiency, latency, tokens, and steps.
+## External escalation
 
-The catalog contains the nine Stage 1 business entries plus a project-owned Hebrew end-to-end Scenario 2 smoke, and five direct Scenario 8 bad-input probes.
+`send_slack_alert` always writes the official deterministic outbox record. If `SLACK_WEBHOOK_URL` is configured in the supplied Stage 2 starter-kit environment, the same tool can also deliver to the real Slack integration required for the demo/submission.
 
-See [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+The application never fabricates successful alert delivery; the returned tool result is the source of truth.
 
-## Scope and Stage 2 readiness
+## Repository map
 
-Stage 1 intentionally does not add LangGraph/LangChain orchestration, MCP, multiple agents, a database, Redis, persistent customer memory, an LLM-as-judge business authority, a duplicate policy engine, or production payment infrastructure.
+```text
+app/
+  crew/
+    bootstrap.py       shared CLI/web construction
+    config.py          Stage 2 runtime configuration
+    contracts.py       typed RiskReport / Decision / Communication handoffs
+    orchestrator.py    deterministic Researcher -> Decision -> Comms flow
+    presentation.py    safe observable execution-trace projection
+    projection.py      trusted evidence -> typed handoff projectors
+    prompts.py         role instructions (not the security boundary)
+    runtime.py         bounded specialist tool loop
+    tools.py           role-scoped supplied tool adapters
 
-The seams needed for later expansion are already explicit: typed agent I/O, isolated tool access, provider abstraction, trusted short-term state, deterministic business projection, and a separate presentation boundary.
+web/
+  index.html           interactive demo shell
+  styles.css           responsive visual system
+  app.js               scenarios, chat and execution-trace rendering
+
+run_agent.py           Stage 1 baseline
+run_crew.py            Stage 2 CLI
+web_app.py             Stage 2 FastAPI demo server
+```
+
+## Design choices
+
+### Why custom orchestration instead of LangGraph/CrewAI?
+
+The Stage 2 workflow is a known sequential dependency chain. A framework would add another abstraction without improving the core authority model. The business-safe pieces are framework-independent: typed handoffs, tool ownership, projectors and guardrails.
+
+If this grew into a production workflow with pause/resume, durable checkpoints, many conditional branches and human approval nodes, LangGraph would be a reasonable orchestration layer **around** these same agents. It should manage workflow, not become the source of business truth.
+
+### Why not let the model write the final business outcome?
+
+Because a model can be persuasive and still be wrong. The model selects actions; typed projectors derive the outcome from trusted tool evidence. This preserves autonomy without giving probabilistic text authority over money or security escalation.
 
 ## Documentation
 
-- [`docs/IMPLEMENTATION_SPEC.md`](docs/IMPLEMENTATION_SPEC.md) — architecture and runtime contract
-- [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) — safety invariants
-- [`docs/MODEL_SELECTION.md`](docs/MODEL_SELECTION.md) — provider/model evidence
-- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reproducible deterministic/live checks
-- [`docs/UPSTREAM.md`](docs/UPSTREAM.md) — pinned upstream source handling
+- [`docs/STAGE2_ARCHITECTURE.md`](docs/STAGE2_ARCHITECTURE.md) — multi-agent architecture, memory and authority boundaries
+- [`docs/IMPLEMENTATION_SPEC.md`](docs/IMPLEMENTATION_SPEC.md) — Stage 1 runtime contract
+- [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) — deterministic safety principles
+- [`docs/MODEL_SELECTION.md`](docs/MODEL_SELECTION.md) — provider/model selection evidence
+- [`docs/VERIFICATION.md`](docs/VERIFICATION.md) — reproducible verification details
+- [`docs/UPSTREAM.md`](docs/UPSTREAM.md) — pinned supplied starter-kit handling
