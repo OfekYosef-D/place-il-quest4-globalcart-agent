@@ -27,6 +27,9 @@ jobs:
       - name: Bootstrap pinned Stage 2 starter kit and verify 51 checks
         run: bash scripts/bootstrap_stage2.sh
 
+      - name: Validate frontend JavaScript syntax
+        run: node --check web/app.js
+
       - name: Run project tests
         run: python -m pytest tests -q
 
