@@ -52,7 +52,7 @@ class IntakeAssessment(BaseModel):
     support_goal: SupportGoal
     case_reason: CaseReason
     # Verbatim customer-text evidence supporting case_reason. It is validated
-    # again against the actual customer text by Python before policy/refund use.
+    # again against current/prior customer-grounded evidence by Python.
     reason_evidence: str | None = Field(default=None, max_length=160)
     issue_summary: str = Field(min_length=1, max_length=240)
 
@@ -84,7 +84,10 @@ INTAKE_PROMPT = """You are GlobalCart's conversation intake classifier.
 You are NOT an operations agent. You have no tools and no authority to decide
 policy, fraud, refunds, or customer identity.
 
-Classify only the semantic intent of the customer's latest message.
+Classify the semantic intent of the customer's latest message. If a prior
+semantic context is supplied by the runtime, it came from an unresolved earlier
+customer turn. Use it to understand short follow-ups, but the latest customer
+message may revise or cancel that context.
 
 Intent values:
 - GREETING: greeting, thanks, small talk, or conversational opener without a concrete support request.
@@ -98,13 +101,14 @@ Support goal values:
 - RETURN: customer explicitly wants to return an item/order.
 - ORDER_STATUS: customer is asking where an order is / its shipping or delivery status.
 - RESOLVE_ISSUE: concrete order problem and the customer asks for help/resolution without specifying refund vs return.
-- NONE: use for greetings, general questions, out-of-scope, unclear, or a message that only states an identifier without a problem/request.
+- NONE: use for greetings, general questions, out-of-scope, unclear, or a message that only states an identifier without a problem/request and there is no prior unresolved support context.
 
-case_reason must be one of the actual policy reasons when the customer's words
-support it: damaged_on_arrival, wrong_item, item_missing, late_delivery,
+case_reason must be one of the actual policy reasons when the customer-grounded
+words support it: damaged_on_arrival, wrong_item, item_missing, late_delivery,
 changed_mind. Otherwise use unknown. For every non-unknown case_reason,
-reason_evidence MUST be a short exact verbatim substring copied from the
-customer message that supports that reason. For unknown, reason_evidence must be null.
+reason_evidence MUST be a short exact verbatim substring from either the latest
+customer message or the runtime-supplied prior verified reason evidence. For
+unknown, reason_evidence must be null.
 
 Critical rules:
 - Do not invent or extract order IDs, user IDs, dollar amounts, policy facts, fraud facts, or tool results.
@@ -127,11 +131,22 @@ class IntakeClassifier:
         self._max_retries = max_retries
         self._retry_backoff_seconds = retry_backoff_seconds
 
-    def classify(self, text: str) -> IntakeTrace:
-        messages = [
-            CanonicalMessage(role="system", content=INTAKE_PROMPT),
-            CanonicalMessage(role="user", content=text),
-        ]
+    def classify(self, text: str, *, prior_semantic: dict | None = None) -> IntakeTrace:
+        messages = [CanonicalMessage(role="system", content=INTAKE_PROMPT)]
+        if prior_semantic:
+            # Semantic context only. Identifiers and money are deliberately not
+            # accepted here; those are resolved separately by deterministic code.
+            messages.append(
+                CanonicalMessage(
+                    role="system",
+                    content=(
+                        "Prior unresolved semantic context (no business authority):\n"
+                        + json.dumps(prior_semantic, ensure_ascii=False, sort_keys=True)
+                    ),
+                )
+            )
+        messages.append(CanonicalMessage(role="user", content=text))
+
         schema = IntakeAssessment.model_json_schema()
         use_schema = bool(getattr(self._provider, "supports_response_schema", False))
         try:
