@@ -8,7 +8,7 @@ from app.config import Settings
 from app.crew.config import CrewSettings
 from app.crew.orchestrator import GlobalCartCrew
 from app.crew.tools import CrewToolKits
-from tests.unit.fakes import FakeProvider, tool_call_response
+from tests.unit.fakes import FakeProvider, intake_response, tool_call_response
 
 
 def _schema(name: str) -> dict:
@@ -31,6 +31,8 @@ def _module(*, high_risk: bool):
         "user_id": user_id,
         "status": "delivered",
         "total_amount": order_total,
+        "delivery_date": "2026-07-31" if high_risk else "2026-07-25",
+        "items": [{"condition": "damaged_on_arrival"}],
     }
     profile = {"user_id": user_id, "prior_fraud_flags": 1 if high_risk else 0}
     audit = {
@@ -126,6 +128,7 @@ def test_high_risk_handoff_blocks_refund_and_sends_one_fraud_alert():
     module = _module(high_risk=True)
     provider = FakeProvider(
         [
+            intake_response(reason_evidence="smashed"),
             tool_call_response(
                 ("r1", "get_order_details", {"order_id": "ORD-1005"}),
                 ("r2", "get_user_profile", {"user_id": "USR-105"}),
@@ -156,6 +159,7 @@ def test_high_risk_handoff_blocks_refund_and_sends_one_fraud_alert():
                             "risk_score": 90,
                             "risk_band": "high",
                             "requested_amount": 480.0,
+                            "triggered_rules": ["FR-01"],
                         },
                     },
                 ),
@@ -182,6 +186,7 @@ def test_clean_case_approves_once_and_does_not_alert():
     module = _module(high_risk=False)
     provider = FakeProvider(
         [
+            intake_response(reason_evidence="damaged"),
             tool_call_response(
                 ("r1", "get_order_details", {"order_id": "ORD-1001"}),
                 ("r2", "get_user_profile", {"user_id": "USR-101"}),
