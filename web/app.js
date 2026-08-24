@@ -1,6 +1,7 @@
 const state = {
   busy: false,
   scenarios: [],
+  activeScenarioId: null,
 };
 
 const els = {
@@ -9,7 +10,6 @@ const els = {
   newCaseButton: document.getElementById("newCaseButton"),
   scenarioList: document.getElementById("scenarioList"),
   messages: document.getElementById("messages"),
-  emptyState: document.getElementById("emptyState"),
   composer: document.getElementById("composer"),
   input: document.getElementById("messageInput"),
   sendButton: document.getElementById("sendButton"),
@@ -41,15 +41,18 @@ function setBusy(value) {
   if (value) {
     els.pipeline.classList.add("active");
     setStatus("running", "Crew running");
-    agentNodes.forEach((node, index) => {
-      window.setTimeout(() => {
-        if (!state.busy) return;
-        agentNodes.forEach((other) => other.classList.remove("running"));
-        node.classList.add("running");
-        node.querySelector(".agent-state").textContent = "Running";
-      }, index * 260);
+    agentNodes.forEach((node) => {
+      node.className = "agent-node not-started";
+      node.querySelector(".agent-state").textContent = "Awaiting trace";
     });
   }
+}
+
+function setActiveScenario(id) {
+  state.activeScenarioId = id;
+  [...els.scenarioList.querySelectorAll(".scenario-button")].forEach((button) => {
+    button.classList.toggle("active", button.dataset.scenarioId === id);
+  });
 }
 
 function clearConversation() {
@@ -65,6 +68,7 @@ function clearConversation() {
   els.trace.innerHTML = `<div class="trace-placeholder"><div class="trace-placeholder-icon">⌁</div><strong>No run yet</strong><span>Tool calls and handoffs will appear here.</span></div>`;
   resetPipeline();
   setStatus("idle", "Ready");
+  setActiveScenario(null);
   els.input.value = "";
   els.input.focus();
 }
@@ -131,6 +135,47 @@ function makeMetric(label, value, tone = "") {
   return box;
 }
 
+function renderRuntimeSummary(data) {
+  const summary = document.createElement("section");
+  summary.className = "runtime-summary";
+  const fields = [
+    ["Case status", data.status.replaceAll("_", " ")],
+    ["Escalation", data.communication?.escalation_required ? "Required" : "No"],
+    ["Trusted stop", data.stop_reason || "Normal completion"],
+  ];
+  fields.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "summary-item";
+    const span = document.createElement("span");
+    span.textContent = label;
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    item.append(span, strong);
+    summary.appendChild(item);
+  });
+  return summary;
+}
+
+function renderRuntimeStop(data) {
+  if (!data.stop_reason) return null;
+  const descriptions = {
+    ORDER_ID_REQUIRED: "No customer-grounded order identifier was supplied. The deterministic boundary stopped execution before any LLM or tool call could invent one.",
+    ORDER_NOT_FOUND: "The trusted order lookup returned ORDER_NOT_FOUND, so the crew stopped instead of guessing another order.",
+    USER_ORDER_MISMATCH: "The trusted fraud audit detected an order/user mismatch. Decision authority was never reached.",
+  };
+  const card = document.createElement("section");
+  card.className = "runtime-stop-card";
+  const label = document.createElement("span");
+  label.className = "stop-label";
+  label.textContent = "Deterministic runtime boundary";
+  const strong = document.createElement("strong");
+  strong.textContent = data.stop_reason;
+  const copy = document.createElement("p");
+  copy.textContent = descriptions[data.stop_reason] || "The runtime stopped this case at a trusted safety or completion boundary.";
+  card.append(label, strong, copy);
+  return card;
+}
+
 function renderHandoffs(data) {
   const fragment = document.createDocumentFragment();
 
@@ -195,7 +240,7 @@ function renderAgent(agent) {
   if (!agent.steps.length) {
     const empty = document.createElement("div");
     empty.className = "tool-step";
-    empty.textContent = agent.status === "skipped" ? "Skipped by deterministic crew flow." : "No tool calls recorded.";
+    empty.textContent = agent.status === "skipped" ? "Not reached by the trusted crew flow." : "No tool calls recorded.";
     card.appendChild(empty);
     return card;
   }
@@ -238,15 +283,19 @@ function renderAgent(agent) {
 
 function renderExecution(data) {
   els.trace.innerHTML = "";
+  els.trace.appendChild(renderRuntimeSummary(data));
+  const stop = renderRuntimeStop(data);
+  if (stop) els.trace.appendChild(stop);
   els.trace.appendChild(renderHandoffs(data));
   data.agents.forEach((agent) => els.trace.appendChild(renderAgent(agent)));
 
   agentNodes.forEach((node) => {
     const role = node.dataset.agent;
     const agent = data.agents.find((item) => item.role === role);
-    node.className = `agent-node ${agent?.status ?? "skipped"}`;
+    const status = agent?.status ?? "skipped";
+    node.className = `agent-node ${status === "skipped" ? "not-started" : status}`;
     const stateNode = node.querySelector(".agent-state");
-    stateNode.textContent = agent?.status === "completed" ? "Done" : agent?.status === "failed" ? "Failed" : "Skipped";
+    stateNode.textContent = status === "completed" ? "Done" : status === "failed" ? "Failed" : "Not run";
   });
 
   els.pipeline.classList.remove("active");
@@ -291,12 +340,14 @@ function renderScenarios() {
     const button = document.createElement("button");
     button.className = "scenario-button";
     button.dataset.tone = scenario.tone;
+    button.dataset.scenarioId = scenario.id;
     const title = document.createElement("strong");
     title.textContent = scenario.title;
     const subtitle = document.createElement("span");
     subtitle.textContent = scenario.subtitle;
     button.append(title, subtitle);
     button.addEventListener("click", () => {
+      setActiveScenario(scenario.id);
       els.input.value = scenario.message;
       runCase(scenario.message);
     });
@@ -328,6 +379,7 @@ els.composer.addEventListener("submit", (event) => {
   event.preventDefault();
   const message = els.input.value;
   els.input.value = "";
+  setActiveScenario(null);
   runCase(message);
 });
 els.input.addEventListener("keydown", (event) => {
