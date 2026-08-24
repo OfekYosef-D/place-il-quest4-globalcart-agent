@@ -99,6 +99,21 @@ class SpecialistAgent:
 
             response = ensure_unique_tool_call_ids(response)
             if not response.tool_calls:
+                # A specialist may choose when to stop reasoning, but Python only
+                # accepts completion after the role has produced its required
+                # trusted terminal evidence. This is generic evidence gating, not
+                # scenario-specific routing or business decision logic.
+                if stop_when is not None and not stop_when(run):
+                    run.messages.append(
+                        CanonicalMessage(
+                            role="user",
+                            content=(
+                                "Runtime check: required trusted evidence for this role is "
+                                "still incomplete. Continue using your available tools."
+                            ),
+                        )
+                    )
+                    continue
                 run.final_content = response.content
                 return run
 
