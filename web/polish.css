@@ -67,6 +67,22 @@
   background: linear-gradient(180deg, var(--accent-2), var(--accent));
 }
 
+.intake-card {
+  border-color: rgba(110, 231, 216, .25);
+  background: linear-gradient(135deg, rgba(8, 38, 43, .56), rgba(8, 20, 35, .78));
+}
+
+.intake-card::before {
+  background: var(--accent);
+}
+
+.intake-summary {
+  margin: 10px 1px 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
 .metric {
   min-height: 54px;
   padding: 10px 11px;
@@ -138,7 +154,7 @@
 
 .runtime-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -209,5 +225,9 @@
   .chat-panel,
   .trace-panel {
     min-height: 520px;
+  }
+
+  .runtime-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
