@@ -57,8 +57,8 @@ def project_decision(
         approved_amount = 0.0
         refund_id = None
         rationale = [
-            "Deterministic fraud audit blocks automatic refund.",
-            policy.get("explanation", "Policy evaluated."),
+            f"Stage 2 fraud audit is {risk.risk_score}/{risk.risk_band} and blocks automatic refund.",
+            f"Return-policy verdict is {policy.get('verdict') or 'UNKNOWN'}; policy eligibility does not override the fraud guardrail.",
         ]
     elif not policy.get("eligible"):
         refund_status = "REJECTED"
