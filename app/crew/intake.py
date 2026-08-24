@@ -33,6 +33,7 @@ SupportGoal = Literal[
     "ORDER_STATUS",
     "NONE",
 ]
+RefundScope = Literal["FULL", "PARTIAL", "UNSPECIFIED", "NONE"]
 CaseReason = Literal[
     "damaged_on_arrival",
     "wrong_item",
@@ -50,6 +51,7 @@ class IntakeAssessment(BaseModel):
 
     intent: Intent
     support_goal: SupportGoal
+    refund_scope: RefundScope
     case_reason: CaseReason
     # Verbatim customer-text evidence supporting case_reason. It is validated
     # again against current/prior customer-grounded evidence by Python.
@@ -63,6 +65,11 @@ class IntakeAssessment(BaseModel):
                 raise ValueError("non-support intent must use support_goal=NONE")
             if self.case_reason != "unknown":
                 raise ValueError("non-support intent must use case_reason=unknown")
+        if self.support_goal == "REFUND":
+            if self.refund_scope == "NONE":
+                raise ValueError("refund goal must classify refund_scope")
+        elif self.refund_scope != "NONE":
+            raise ValueError("non-refund goal must use refund_scope=NONE")
         if self.case_reason == "unknown":
             if self.reason_evidence not in {None, ""}:
                 raise ValueError("unknown case_reason must not claim supporting evidence")
@@ -102,6 +109,12 @@ Support goal values:
 - ORDER_STATUS: customer is asking where an order is / its shipping or delivery status.
 - RESOLVE_ISSUE: concrete order problem and the customer asks for help/resolution without specifying refund vs return.
 - NONE: use for greetings, general questions, out-of-scope, unclear, or a message that only states an identifier without a problem/request and there is no prior unresolved support context.
+
+refund_scope values:
+- FULL: the customer explicitly asks for a full/entire refund or all their money back.
+- PARTIAL: the customer explicitly asks for a particular/smaller amount or partial refund. Do not extract or return the number itself.
+- UNSPECIFIED: the customer asks for a refund but does not make clear whether it is full or partial.
+- NONE: required whenever support_goal is not REFUND.
 
 case_reason must be one of the actual policy reasons when the customer-grounded
 words support it: damaged_on_arrival, wrong_item, item_missing, late_delivery,
