@@ -6,11 +6,8 @@ import argparse
 import json
 import sys
 
-from app.config import load_settings
-from app.crew.config import load_crew_settings
-from app.crew.orchestrator import CrewRun, GlobalCartCrew
-from app.crew.tools import load_crew_toolkits
-from app.llm.factory import build_provider, has_provider_api_key, required_api_key_name, supported_provider_names
+from app.crew.bootstrap import build_crew
+from app.crew.orchestrator import CrewRun
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,22 +18,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--message", required=True, help="Customer ticket to resolve.")
     parser.add_argument("--verbose", action="store_true", help="Print structured handoffs and per-agent tool trace.")
     return parser
-
-
-def build_crew() -> GlobalCartCrew:
-    settings = load_settings()
-    provider_name = settings.llm_provider.strip().lower()
-    if provider_name not in supported_provider_names():
-        raise RuntimeError(f"Unsupported LLM_PROVIDER {settings.llm_provider!r}.")
-    if not has_provider_api_key(settings):
-        raise RuntimeError(f"Missing {required_api_key_name(provider_name)}.")
-    if not settings.llm_model:
-        raise RuntimeError("Missing LLM_MODEL.")
-
-    crew_settings = load_crew_settings()
-    provider = build_provider(settings)
-    toolkits = load_crew_toolkits(crew_settings.starter_kit_path)
-    return GlobalCartCrew(settings, crew_settings, provider, toolkits)
 
 
 def format_verbose(run: CrewRun) -> str:
