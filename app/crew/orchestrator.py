@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from app.config import Settings
 from app.crew.config import CrewSettings
+from app.crew.context import PendingCustomerContext
 from app.crew.contracts import CommunicationResult, CrewResult, DecisionHandoff, RiskReport
 from app.crew.grounding import GroundedCustomerFacts, ground_customer_text
 from app.crew.intake import IntakeAssessment, IntakeClassifier, IntakeTrace
@@ -20,6 +21,7 @@ from app.llm.base import LLMProvider
 @dataclass
 class CrewTrace:
     intake: IntakeTrace | None = None
+    grounded: GroundedCustomerFacts | None = None
     researcher: SpecialistRun | None = None
     decision: SpecialistRun | None = None
     comms: SpecialistRun | None = None
@@ -71,12 +73,22 @@ class GlobalCartCrew:
             **common,
         )
 
-    def handle_customer_message(self, text: str) -> CrewRun:
+    def handle_customer_message(
+        self,
+        text: str,
+        *,
+        prior_context: PendingCustomerContext | None = None,
+    ) -> CrewRun:
         trace = CrewTrace()
-        grounded = ground_customer_text(text)
+        current_grounded = ground_customer_text(text)
+        grounded = _resolve_grounded_context(current_grounded, prior_context)
+        trace.grounded = grounded
 
         # Phase 0: semantic understanding with no tools and no business authority.
-        trace.intake = self.intake_classifier.classify(text)
+        trace.intake = self.intake_classifier.classify(
+            text,
+            prior_semantic=_prior_semantic_context(prior_context),
+        )
         if trace.intake.assessment is None:
             return CrewRun(
                 result=_failed_safe(
@@ -90,7 +102,7 @@ class GlobalCartCrew:
             )
         intake = trace.intake.assessment
 
-        if not _reason_evidence_is_grounded(text, intake):
+        if not _reason_evidence_is_grounded(text, intake, prior_context):
             return CrewRun(
                 result=_failed_safe(
                     "INTAKE_REASON_EVIDENCE_NOT_GROUNDED",
@@ -107,7 +119,10 @@ class GlobalCartCrew:
             return CrewRun(result=non_case, trace=trace)
 
         # From here on, semantic classification says there is a support case.
-        # Literal customer facts are still resolved independently of the LLM.
+        # Literal customer facts are resolved independently of the LLM. A fact
+        # supplied on the latest turn overrides the same grounded fact from an
+        # unresolved earlier turn; multiple facts in the latest turn stay
+        # ambiguous and are never arbitrarily selected.
         grounding_result = _validate_grounded_customer_facts(grounded)
         if grounding_result is not None:
             return CrewRun(result=grounding_result, trace=trace)
@@ -129,7 +144,7 @@ class GlobalCartCrew:
             return self._handle_status_case(text, intake, claimed_order, trace)
 
         trace.researcher = self.researcher.run(
-            _research_task(text, intake),
+            _research_task(text, intake, claimed_order, claimed_user),
             guard=self._research_guard(claimed_order, claimed_user),
             stop_when=_research_terminal,
         )
@@ -505,6 +520,36 @@ class GlobalCartCrew:
         )
 
 
+def _prior_semantic_context(context: PendingCustomerContext | None) -> dict | None:
+    if context is None:
+        return None
+    return {
+        "support_goal": context.support_goal,
+        "case_reason": context.case_reason,
+        "reason_evidence": context.reason_evidence,
+        "issue_summary": context.issue_summary,
+    }
+
+
+def _resolve_grounded_context(
+    current: GroundedCustomerFacts,
+    prior: PendingCustomerContext | None,
+) -> GroundedCustomerFacts:
+    if prior is None:
+        return current
+
+    order_ids = current.order_ids or ((prior.order_id,) if prior.order_id else ())
+    user_ids = current.user_ids or ((prior.user_id,) if prior.user_id else ())
+    explicit_amounts = current.explicit_amounts or (
+        (prior.explicit_amount,) if prior.explicit_amount is not None else ()
+    )
+    return GroundedCustomerFacts(
+        order_ids=tuple(order_ids),
+        user_ids=tuple(user_ids),
+        explicit_amounts=tuple(explicit_amounts),
+    )
+
+
 def _non_case_intake_result(intake: IntakeAssessment) -> CrewResult | None:
     if intake.intent == "SUPPORT_CASE":
         return None
@@ -562,11 +607,22 @@ def _validate_grounded_customer_facts(grounded: GroundedCustomerFacts) -> CrewRe
     return None
 
 
-def _reason_evidence_is_grounded(text: str, intake: IntakeAssessment) -> bool:
+def _reason_evidence_is_grounded(
+    text: str,
+    intake: IntakeAssessment,
+    prior_context: PendingCustomerContext | None,
+) -> bool:
     if intake.case_reason == "unknown":
         return True
     evidence = (intake.reason_evidence or "").strip()
-    return bool(evidence) and evidence.casefold() in text.casefold()
+    if not evidence:
+        return False
+    if evidence.casefold() in text.casefold():
+        return True
+    if prior_context is None or prior_context.case_reason != intake.case_reason:
+        return False
+    prior_evidence = (prior_context.reason_evidence or "").strip()
+    return bool(prior_evidence) and evidence.casefold() == prior_evidence.casefold()
 
 
 def _resolve_policy_reason(intake: IntakeAssessment, order: dict) -> str | None:
@@ -592,13 +648,21 @@ def _resolve_policy_reason(intake: IntakeAssessment, order: dict) -> str | None:
     return None
 
 
-def _research_task(text: str, intake: IntakeAssessment) -> str:
+def _research_task(
+    text: str,
+    intake: IntakeAssessment,
+    order_id: str,
+    user_id: str | None,
+) -> str:
+    grounded = {"order_id": order_id, "claimed_user_id": user_id}
     return (
         "Investigate this grounded customer support case. Produce trusted evidence using your tools; "
         "the runtime constructs RiskReport from the deterministic fraud audit. The semantic intake "
-        "below is context only and contains no trusted identifiers or monetary authority.\n\n"
+        "below has no business authority. The grounded identifier context is authoritative and must "
+        "be preserved exactly.\n\n"
+        f"Grounded identifiers: {json.dumps(grounded, sort_keys=True)}\n"
         f"Semantic intake: {intake.model_dump_json()}\n"
-        f"Customer ticket:\n{text}"
+        f"Latest customer message:\n{text}"
     )
 
 
@@ -609,7 +673,7 @@ def _status_task(text: str, intake: IntakeAssessment, order_id: str) -> str:
         "policy, or refunds for this task.\n\n"
         f"Grounded order id: {order_id}\n"
         f"Semantic intake: {intake.model_dump_json()}\n"
-        f"Customer ticket:\n{text}"
+        f"Latest customer message:\n{text}"
     )
 
 
@@ -618,7 +682,7 @@ def _decision_task(text: str, risk: RiskReport, requested_amount: float, policy_
         "Resolve the business outcome for this ticket. RiskReport is a validated Researcher handoff. "
         "The runtime has also resolved the policy reason and requested amount from grounded customer "
         "facts and trusted order data. Use those exact values; do not substitute another reason or amount.\n\n"
-        f"Customer ticket:\n{text}\n\n"
+        f"Latest customer message:\n{text}\n\n"
         f"Grounded policy reason: {policy_reason}\n"
         f"Grounded requested amount: {requested_amount:.2f} USD\n"
         f"RiskReport:\n{risk.model_dump_json(indent=2)}"
@@ -676,7 +740,7 @@ def _comms_terminal(run: SpecialistRun) -> bool:
 
 
 def _requested_amount(grounded: GroundedCustomerFacts, risk: RiskReport) -> float:
-    """Money comes from literal customer text or the trusted full-order total, never model prose."""
+    """Money comes from literal customer context or trusted order total, never model prose."""
     if grounded.explicit_amount is not None:
         return round(grounded.explicit_amount, 2)
     return round(float(risk.evidence.get("order_total_usd") or 0.0), 2)
