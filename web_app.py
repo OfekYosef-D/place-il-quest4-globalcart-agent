@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
 import uvicorn
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -63,6 +61,13 @@ SCENARIOS = [
         "message": "Order ORD-9999 arrived damaged. Please refund it.",
         "tone": "neutral",
     },
+    {
+        "id": "missing-order-id",
+        "title": "Missing order number",
+        "subtitle": "No grounded ID -> no LLM or tool execution",
+        "message": "Hi, I need help with a refund.",
+        "tone": "neutral",
+    },
 ]
 
 
@@ -96,10 +101,7 @@ def run_case(payload: CaseRequest):
 
 
 def main() -> None:
-    load_dotenv()
-    host = os.getenv("WEB_HOST", "127.0.0.1")
-    port = int(os.getenv("WEB_PORT", "8000"))
-    uvicorn.run("web_app:app", host=host, port=port, reload=False)
+    uvicorn.run("web_app:app", host="127.0.0.1", port=8000, reload=False)
 
 
 if __name__ == "__main__":
