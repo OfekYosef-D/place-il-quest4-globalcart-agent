@@ -70,12 +70,23 @@ class RoleToolKit:
         reserved, block_reason = self._refund_ledger.reserve(order_id, amount, reason)
         if not reserved:
             existing = self._refund_ledger.get(order_id)
+            if existing is not None and existing.status == "APPROVED":
+                # Idempotent replay: report the already-established business
+                # outcome without calling the irreversible starter tool again.
+                return {
+                    "status": "APPROVED",
+                    "order_id": order_id,
+                    "requested_amount": existing.amount,
+                    "approved_amount": existing.amount,
+                    "refund_id": existing.refund_id,
+                    "reasons": ["idempotent replay of an already approved refund"],
+                    "idempotent_replay": True,
+                }
             return {
                 "error": "DUPLICATE_REFUND_BLOCKED",
-                "message": "A refund for this order is already approved or currently being processed.",
+                "message": "A refund for this order is currently being processed.",
                 "reason": block_reason,
                 "order_id": order_id,
-                "existing_refund_id": existing.refund_id if existing else None,
             }
 
         try:
